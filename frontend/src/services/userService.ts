@@ -116,7 +116,7 @@ class UserService {
   async getNurseStations(): Promise<NurseStation[]> {
     const response = await usersApi.getStations();
     if (!response.success) throw new Error('Failed to fetch nurse stations');
-    return response.data.map((s: any) => ({ id: s.id, name: s.name, unit: s.location || 'General', floor: 'Unknown', isActive: s.isActive }));
+    return response.data.map((s: any) => ({ id: s.id, name: s.name, unit: s.location || 'General', floor: 'Unknown', isActive: s.isActive === 1 || s.isActive === '1' || s.isActive === true }));
   }
 
   async createNurseStation(station: Omit<NurseStation, 'id'>): Promise<NurseStation> {
@@ -124,7 +124,7 @@ class UserService {
     if (!response.success) throw new Error('Failed to create nurse station');
     const stationsResponse = await usersApi.getStations();
     const createdStation = stationsResponse.data?.find((s: any) => s.id === response.data.id);
-    if (createdStation) return { id: createdStation.id, name: createdStation.name, unit: createdStation.location || 'General', floor: 'Unknown', isActive: createdStation.isActive };
+    if (createdStation) return { id: createdStation.id, name: createdStation.name, unit: createdStation.location || 'General', floor: 'Unknown', isActive: createdStation.isActive === 1 || createdStation.isActive === '1' || createdStation.isActive === true };
     throw new Error('Failed to retrieve created station');
   }
 

@@ -4,7 +4,7 @@ import { discardReasonsApi } from './api';
 export interface DiscardReason { id: string; value: string; label: string; description: string; iconName: string; isActive: boolean; requiresNotes: boolean; createdAt: Date; updatedAt: Date; }
 
 function mapApiReasonToDiscardReason(apiReason: any): DiscardReason {
-  return { id: apiReason.id, value: apiReason.reasonValue, label: apiReason.reasonLabel, description: apiReason.description, iconName: apiReason.iconName || 'FileText', isActive: apiReason.isActive, requiresNotes: apiReason.requiresNotes, createdAt: new Date(), updatedAt: new Date() };
+  return { id: apiReason.id, value: apiReason.reasonValue, label: apiReason.reasonLabel, description: apiReason.description, iconName: apiReason.iconName || 'FileText', isActive: apiReason.isActive === 1 || apiReason.isActive === '1' || apiReason.isActive === true, requiresNotes: apiReason.requiresNotes === 1 || apiReason.requiresNotes === '1' || apiReason.requiresNotes === true, createdAt: new Date(), updatedAt: new Date() };
 }
 
 class DiscardReasonService {

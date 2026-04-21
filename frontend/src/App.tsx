@@ -91,9 +91,13 @@ function App() {
   const { feedings, addFeeding, deleteFeeding, clearAllData } = useStorage();
   const { 
     selectedPatient, 
+    patientOrders,
+    administrations,
     emrConnected, 
     loadPatients,
-    selectPatient 
+    selectPatient,
+    recordAdministration,
+    isLoading: emrLoading
   } = useEMR();
   
   const [showForm, setShowForm] = useState(false);
@@ -473,7 +477,7 @@ function App() {
             {canViewOrders && (
               <TabsContent value="orders" className="mt-6">
                 {selectedPatient ? (
-                  <CPOEOrderEntry patient={selectedPatient} />
+                  <CPOEOrderEntry patient={selectedPatient} patientOrders={patientOrders} isLoading={emrLoading} />
                 ) : (
                   <div className="text-center py-12 text-slate-500">
                     <Users className="w-12 h-12 mx-auto mb-3 text-slate-300" />
@@ -529,7 +533,13 @@ function App() {
             {canAdministerFeeding && (
               <TabsContent value="admin" className="mt-6">
                 {selectedPatient ? (
-                  <ClosedLoopAdministration patient={selectedPatient} />
+                  <ClosedLoopAdministration 
+                    patient={selectedPatient} 
+                    patientOrders={patientOrders}
+                    administrations={administrations}
+                    recordAdministration={recordAdministration}
+                    isLoading={emrLoading}
+                  />
                 ) : (
                   <div className="text-center py-12 text-slate-500">
                     <Users className="w-12 h-12 mx-auto mb-3 text-slate-300" />

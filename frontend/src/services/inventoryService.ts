@@ -130,7 +130,7 @@ class InventoryService {
   async getStorageUnits(): Promise<StorageUnit[]> {
     const response = await inventoryApi.getStorageUnits();
     if (!response.success) throw new Error('Failed to fetch storage units');
-    return response.data.map((u: any) => ({ id: u.id, name: u.name, location: u.type, temperature: u.temperatureMin || (u.type === 'freezer' ? -20 : 4), temperatureUnit: 'celsius', capacity: u.capacity || 100, currentCount: u.currentCount, isActive: u.isActive }));
+    return response.data.map((u: any) => ({ id: u.id, name: u.name, location: u.type, temperature: u.temperatureMin || (u.type === 'freezer' ? -20 : 4), temperatureUnit: 'celsius', capacity: u.capacity || 100, currentCount: u.currentCount, isActive: u.isActive === 1 || u.isActive === '1' || u.isActive === true }));
   }
 
   generateBarcode(milkType: MilkType, patientId?: string): string {

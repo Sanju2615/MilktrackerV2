@@ -7,6 +7,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../utils/db');
+const { camelizeRow, camelizeRows } = require('../utils/db');
 const auditService = require('../services/auditService');
 
 const router = express.Router();
@@ -88,7 +89,9 @@ router.post('/administer', [
     console.error('Administer feeding error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to record feeding'
+      error: 'Failed to record feeding',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -139,7 +142,9 @@ router.post('/:id/verify', async (req, res) => {
     console.error('Verify feeding error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to verify feeding'
+      error: 'Failed to verify feeding',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -179,13 +184,15 @@ router.get('/', async (req, res) => {
 
     res.json({
       success: true,
-      data: feedings
+      data: camelizeRows(feedings)
     });
   } catch (error) {
     console.error('Get feedings error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve feedings'
+      error: 'Failed to retrieve feedings',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -213,13 +220,15 @@ router.get('/patient/:mrn', async (req, res) => {
 
     res.json({
       success: true,
-      data: feedings
+      data: camelizeRows(feedings)
     });
   } catch (error) {
     console.error('Get patient feedings error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve patient feedings'
+      error: 'Failed to retrieve patient feedings',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });

@@ -11,17 +11,23 @@ function normalizeGender(g: any): 'male' | 'female' | 'other' | 'unknown' {
   return 'unknown';
 }
 
+function safeDate(val: any, fallback?: Date): Date {
+  if (!val) return fallback || new Date();
+  const d = new Date(val);
+  return isNaN(d.getTime()) ? (fallback || new Date()) : d;
+}
+
 function mapTrakCareBabyToPatient(baby: any): EMRPatient {
   return {
     id: baby.patientId || baby.mrn || baby.id,
     mrn: baby.mrn,
     firstName: baby.firstName || '',
     lastName: baby.lastName || '',
-    dateOfBirth: new Date(baby.dateOfBirth),
+    dateOfBirth: safeDate(baby.dateOfBirth),
     gender: normalizeGender(baby.gender),
     roomNumber: baby.room || baby.roomNumber,
     bedNumber: baby.bed || baby.bedNumber,
-    admissionDate: baby.admissionDate ? new Date(baby.admissionDate) : undefined,
+    admissionDate: baby.admissionDate ? safeDate(baby.admissionDate) : undefined,
     attendingPhysician: baby.attendingPhysician,
     motherName: baby.motherName || baby.motherMrn,
     gestationalAgeAtBirth: baby.gestationalAgeAtBirth,
@@ -31,12 +37,52 @@ function mapTrakCareBabyToPatient(baby: any): EMRPatient {
   };
 }
 
+function normalizeFeedingType(ft: any): string {
+  if (!ft) return 'bottle';
+  const lower = String(ft).toLowerCase().trim();
+  if (lower.includes('breast')) return 'breast';
+  if (lower.includes('bottle')) return 'bottle';
+  if (lower.includes('gavage')) return 'gavage';
+  if (lower.includes('ng') || lower.includes('nasogastric')) return 'ng_tube';
+  if (lower.includes('og') || lower.includes('orogastric')) return 'og_tube';
+  return ft; // pass through as-is for display
+}
+
+function normalizeRoute(r: any): string | undefined {
+  if (!r) return undefined;
+  const lower = String(r).toLowerCase().trim();
+  if (lower === 'oral' || lower === 'po') return 'oral';
+  if (lower.includes('ng')) return 'ng_tube';
+  if (lower.includes('og')) return 'og_tube';
+  if (lower.includes('gastrostomy') || lower.includes('g-tube')) return 'gastrostomy';
+  return r;
+}
+
+function normalizeOrderStatus(s: any): 'active' | 'on-hold' | 'cancelled' | 'completed' {
+  if (!s) return 'active';
+  const lower = String(s).toLowerCase().trim();
+  if (lower === 'active') return 'active';
+  if (lower === 'on-hold' || lower === 'on hold') return 'on-hold';
+  if (lower === 'cancelled' || lower === 'canceled') return 'cancelled';
+  if (lower === 'completed' || lower === 'complete') return 'completed';
+  return 'active';
+}
+
 function mapTrakCareOrderToFeedingOrder(order: any): FeedingOrder {
   return {
-    id: order.id, patientId: order.patientMrn, orderId: order.orderId, orderedBy: order.orderedBy,
-    orderedAt: new Date(order.orderedAt), feedingType: order.feedingType, volume: order.volume,
-    frequency: order.frequency, route: order.route, fortification: order.fortification,
-    status: order.status, priority: order.priority, specialInstructions: order.specialInstructions,
+    id: order.orderId || order.id,
+    patientId: order.patientMrn,
+    orderId: String(order.orderId || order.id),
+    orderedBy: order.orderedBy || '',
+    orderedAt: safeDate(order.orderedAt),
+    feedingType: normalizeFeedingType(order.feedingType),
+    volume: order.volume ? Number(order.volume) : undefined,
+    frequency: order.frequency || '',
+    route: normalizeRoute(order.route),
+    fortification: order.fortification,
+    status: normalizeOrderStatus(order.status),
+    priority: order.priority || 'routine',
+    specialInstructions: order.notes || order.specialInstructions,
   };
 }
 
@@ -45,10 +91,10 @@ function mapApiAdministrationToFeedingAdministration(admin: any): FeedingAdminis
     id: admin.id, patientId: admin.patientMrn, patientName: admin.patientName,
     orderId: admin.orderId, milkInventoryId: admin.milkInventoryId, milkBarcode: admin.milkBarcode,
     feedingType: admin.feedingType, volumeGiven: admin.volumeGiven,
-    administeredAt: new Date(admin.administeredAt),
+    administeredAt: safeDate(admin.administeredAt),
     administeredBy: admin.administeredByName || admin.administeredBy,
     verifiedBy: admin.verifiedByName || admin.verifiedBy,
-    verifiedAt: admin.verifiedAt ? new Date(admin.verifiedAt) : undefined,
+    verifiedAt: admin.verifiedAt ? safeDate(admin.verifiedAt) : undefined,
     notes: admin.notes,
   };
 }
@@ -116,17 +162,30 @@ export function useEMR() {
   const selectPatient = useCallback(async (patient: EMRPatient) => {
     if (!isAuthenticated()) { setError('Please login first'); return; }
     setIsLoading(true); setError(null);
+    setSelectedPatient(patient);
+    
+    // Fetch orders and administrations independently so one failure doesn't block the other
     try {
-      const [ordersResponse, adminResponse] = await Promise.all([
-        trakcareApi.getPatientOrders(patient.mrn, 'active'),
-        feedingApi.getAdministrations({ patientMrn: patient.mrn }),
-      ]);
-      setSelectedPatient(patient);
-      if (ordersResponse.success) setPatientOrders(ordersResponse.data.map(mapTrakCareOrderToFeedingOrder));
-      if (adminResponse.success) setAdministrations(adminResponse.data.map(mapApiAdministrationToFeedingAdministration));
+      const ordersResponse = await trakcareApi.getPatientOrders(patient.mrn, 'active');
+      if (ordersResponse.success && Array.isArray(ordersResponse.data)) {
+        setPatientOrders(ordersResponse.data.map(mapTrakCareOrderToFeedingOrder));
+      }
     } catch (err: any) {
-      setError(err.message || 'Failed to load patient data');
-    } finally { setIsLoading(false); }
+      console.warn('Failed to load patient orders:', err.message);
+      // Don't block UI — orders just stay empty
+    }
+
+    try {
+      const adminResponse = await feedingApi.getAdministrations({ patientMrn: patient.mrn });
+      if (adminResponse.success && Array.isArray(adminResponse.data)) {
+        setAdministrations(adminResponse.data.map(mapApiAdministrationToFeedingAdministration));
+      }
+    } catch (err: any) {
+      console.warn('Failed to load administrations:', err.message);
+      // Don't block UI — administrations just stay empty
+    }
+
+    setIsLoading(false);
   }, []);
 
   const recordAdministration = useCallback(async (admin: Omit<FeedingAdministration, 'id'>): Promise<FeedingAdministration> => {

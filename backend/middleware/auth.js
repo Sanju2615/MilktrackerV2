@@ -95,9 +95,22 @@ const authenticate = async (req, res, next) => {
     }
 
     console.error('Auth middleware error:', error);
+    
+    // Detect MySQL connection errors so frontend can show a helpful message
+    if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND' || error.code === 'ETIMEDOUT') {
+      return res.status(503).json({
+        success: false,
+        error: 'Database unavailable. The MySQL server may not be running.',
+        code: 'DB_CONNECTION_FAILED',
+        details: error.message
+      });
+    }
+
     return res.status(500).json({
       success: false,
-      error: 'Authentication failed.'
+      error: 'Authentication failed.',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 };

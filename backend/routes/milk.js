@@ -7,6 +7,7 @@ const { body, param, validationResult } = require('express-validator');
 const { v4: uuidv4 } = require('uuid');
 const moment = require('moment');
 const db = require('../utils/db');
+const { camelizeRow, camelizeRows } = require('../utils/db');
 const auditService = require('../services/auditService');
 
 const router = express.Router();
@@ -65,18 +66,20 @@ router.get('/stats', async (req, res) => {
     res.json({
       success: true,
       data: {
-        byStatus: statusStats,
-        byType: typeStats,
-        byStorage: storageStats,
-        todayCollections: todayCollections[0],
-        todayAdministrations: todayAdministrations[0]
+        byStatus: camelizeRows(statusStats),
+        byType: camelizeRows(typeStats),
+        byStorage: camelizeRows(storageStats),
+        todayCollections: camelizeRow(todayCollections[0]),
+        todayAdministrations: camelizeRow(todayAdministrations[0])
       }
     });
   } catch (error) {
     console.error('Get milk stats error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve milk statistics'
+      error: 'Failed to retrieve milk statistics',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -159,7 +162,9 @@ router.post('/collect', [
     console.error('Collect milk error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to collect milk'
+      error: 'Failed to collect milk',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -237,7 +242,7 @@ router.get('/', async (req, res) => {
 
     res.json({
       success: true,
-      data: milk,
+      data: camelizeRows(milk),
       pagination: {
         page: page,
         limit: limit,
@@ -249,7 +254,9 @@ router.get('/', async (req, res) => {
     console.error('Get milk inventory error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve milk inventory'
+      error: 'Failed to retrieve milk inventory',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -281,13 +288,15 @@ router.get('/barcode/:barcode', async (req, res) => {
 
     res.json({
       success: true,
-      data: milk[0]
+      data: camelizeRow(milk[0])
     });
   } catch (error) {
     console.error('Get milk by barcode error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve milk'
+      error: 'Failed to retrieve milk',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -321,13 +330,15 @@ router.get('/:id', async (req, res) => {
 
     res.json({
       success: true,
-      data: milk[0]
+      data: camelizeRow(milk[0])
     });
   } catch (error) {
     console.error('Get milk error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve milk'
+      error: 'Failed to retrieve milk',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -388,7 +399,9 @@ router.post('/:id/discard', [
     console.error('Discard milk error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to discard milk'
+      error: 'Failed to discard milk',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -458,7 +471,9 @@ router.post('/:id/reserve', [
     console.error('Reserve milk error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to reserve milk'
+      error: 'Failed to reserve milk',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -507,7 +522,9 @@ router.post('/:id/transfer', [
     console.error('Transfer milk error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to transfer milk'
+      error: 'Failed to transfer milk',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });

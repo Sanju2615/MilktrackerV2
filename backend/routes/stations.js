@@ -6,6 +6,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../utils/db');
+const { camelizeRow, camelizeRows } = require('../utils/db');
 const auditService = require('../services/auditService');
 
 const router = express.Router();
@@ -30,13 +31,15 @@ router.get('/', async (req, res) => {
 
     res.json({
       success: true,
-      data: stations
+      data: camelizeRows(stations)
     });
   } catch (error) {
     console.error('Get stations error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve stations'
+      error: 'Failed to retrieve stations',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -63,13 +66,15 @@ router.get('/:id', async (req, res) => {
 
     res.json({
       success: true,
-      data: stations[0]
+      data: camelizeRow(stations[0])
     });
   } catch (error) {
     console.error('Get station error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve station'
+      error: 'Failed to retrieve station',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -131,7 +136,9 @@ router.post('/', [
     console.error('Create station error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to create station'
+      error: 'Failed to create station',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -195,7 +202,9 @@ router.put('/:id', async (req, res) => {
     console.error('Update station error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to update station'
+      error: 'Failed to update station',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });

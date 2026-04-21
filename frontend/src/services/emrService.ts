@@ -10,7 +10,7 @@ function mapTrakCareBabyToPatient(baby: any): EMRPatient {
     admissionDate: baby.admissionDate ? new Date(baby.admissionDate) : undefined,
     attendingPhysician: baby.attendingPhysician, motherName: baby.motherName,
     gestationalAgeAtBirth: baby.gestationalAgeAtBirth, birthWeight: baby.birthWeight,
-    currentWeight: baby.currentWeight, isActive: baby.isActive,
+    currentWeight: baby.currentWeight, isActive: baby.isActive === 1 || baby.isActive === '1' || baby.isActive === true,
   };
 }
 

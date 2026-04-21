@@ -8,6 +8,7 @@ const bcrypt = require('bcryptjs');
 const { body, param, validationResult } = require('express-validator');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../utils/db');
+const { camelizeRow, camelizeRows } = require('../utils/db');
 const auditService = require('../services/auditService');
 const { requirePermission } = require('../middleware/auth');
 
@@ -86,7 +87,7 @@ router.get('/', async (req, res) => {
 
     res.json({
       success: true,
-      data: users,
+      data: camelizeRows(users),
       pagination: {
         page: page,
         limit: limit,
@@ -98,7 +99,9 @@ router.get('/', async (req, res) => {
     console.error('Get users error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve users'
+      error: 'Failed to retrieve users',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -142,15 +145,17 @@ router.get('/:id', async (req, res) => {
     res.json({
       success: true,
       data: {
-        ...users[0],
-        assignedStations: stations
+        ...camelizeRow(users[0]),
+        assignedStations: camelizeRows(stations)
       }
     });
   } catch (error) {
     console.error('Get user error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve user'
+      error: 'Failed to retrieve user',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -234,7 +239,9 @@ router.post('/', [
     console.error('Create user error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to create user'
+      error: 'Failed to create user',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -307,7 +314,9 @@ router.put('/:id', [
     console.error('Update user error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to update user'
+      error: 'Failed to update user',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -355,7 +364,9 @@ router.put('/:id/status', [
     console.error('Change status error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to change user status'
+      error: 'Failed to change user status',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -419,7 +430,9 @@ router.put('/:id/stations', [
     console.error('Assign stations error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to assign stations'
+      error: 'Failed to assign stations',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -438,13 +451,15 @@ router.get('/stations/all', async (req, res) => {
 
     res.json({
       success: true,
-      data: stations
+      data: camelizeRows(stations)
     });
   } catch (error) {
     console.error('Get stations error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve stations'
+      error: 'Failed to retrieve stations',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -494,7 +509,9 @@ router.post('/stations', [
     console.error('Create station error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to create station'
+      error: 'Failed to create station',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });

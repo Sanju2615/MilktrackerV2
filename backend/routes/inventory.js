@@ -7,6 +7,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../utils/db');
+const { camelizeRow, camelizeRows } = require('../utils/db');
 const auditService = require('../services/auditService');
 
 const router = express.Router();
@@ -30,13 +31,15 @@ router.get('/storage-units', async (req, res) => {
 
     res.json({
       success: true,
-      data: units
+      data: camelizeRows(units)
     });
   } catch (error) {
     console.error('Get storage units error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve storage units'
+      error: 'Failed to retrieve storage units',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -88,7 +91,9 @@ router.post('/storage-units', [
     console.error('Create storage unit error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to create storage unit'
+      error: 'Failed to create storage unit',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -127,8 +132,8 @@ router.get('/alerts', async (req, res) => {
     res.json({
       success: true,
       data: {
-        expiringSoon,
-        expired,
+        expiringSoon: camelizeRows(expiringSoon),
+        expired: camelizeRows(expired),
         totalAlerts: expiringSoon.length + expired.length
       }
     });
@@ -136,7 +141,9 @@ router.get('/alerts', async (req, res) => {
     console.error('Get alerts error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve alerts'
+      error: 'Failed to retrieve alerts',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -188,18 +195,20 @@ router.get('/stats', async (req, res) => {
     res.json({
       success: true,
       data: {
-        byStatus: statusStats,
-        byType: typeStats,
-        byStorage: storageStats,
-        todayCollections: todayCollections[0],
-        todayAdministrations: todayAdministrations[0]
+        byStatus: camelizeRows(statusStats),
+        byType: camelizeRows(typeStats),
+        byStorage: camelizeRows(storageStats),
+        todayCollections: camelizeRow(todayCollections[0]),
+        todayAdministrations: camelizeRow(todayAdministrations[0])
       }
     });
   } catch (error) {
     console.error('Get stats error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve statistics'
+      error: 'Failed to retrieve statistics',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });

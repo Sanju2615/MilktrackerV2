@@ -32,7 +32,9 @@ router.get('/', async (req, res) => {
     console.error('Get config error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve configuration'
+      error: 'Failed to retrieve configuration',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -65,7 +67,9 @@ router.get('/:key', async (req, res) => {
     console.error('Get config error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve configuration'
+      error: 'Failed to retrieve configuration',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -108,7 +112,9 @@ router.put('/:key', async (req, res) => {
     console.error('Update config error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to update configuration'
+      error: 'Failed to update configuration',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });

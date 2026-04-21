@@ -9,6 +9,34 @@
 
 const mysql = require('mysql2/promise');
 
+/**
+ * Convert a snake_case string to camelCase.
+ * e.g., 'first_name' -> 'firstName', 'primary_station_id' -> 'primaryStationId'
+ */
+const snakeToCamel = (str) =>
+  str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+
+/**
+ * Convert all keys in an object from snake_case to camelCase.
+ * Returns a new object (does not mutate the original).
+ */
+const camelizeRow = (row) => {
+  if (!row || typeof row !== 'object') return row;
+  const out = {};
+  for (const key of Object.keys(row)) {
+    out[snakeToCamel(key)] = row[key];
+  }
+  return out;
+};
+
+/**
+ * Convert all rows in an array from snake_case keys to camelCase keys.
+ */
+const camelizeRows = (rows) => {
+  if (!Array.isArray(rows)) return rows;
+  return rows.map(camelizeRow);
+};
+
 // Create connection pool
 const pool = mysql.createPool({
   host: process.env.DB_HOST || 'localhost',
@@ -23,18 +51,47 @@ const pool = mysql.createPool({
   keepAliveInitialDelay: 10000
 });
 
+// Connection state tracking
+let dbConnected = false;
+let lastConnectionError = null;
+
 // Test connection
 const testConnection = async () => {
   try {
     const connection = await pool.getConnection();
-    console.log('✓ Database connected successfully');
+    console.log('✓ MySQL database connected successfully');
+    console.log(`  Host: ${process.env.DB_HOST || 'localhost'}:${process.env.DB_PORT || 3306}`);
+    console.log(`  Database: ${process.env.DB_NAME || 'milktracker'}`);
+    console.log(`  User: ${process.env.DB_USER || 'root'}`);
+    dbConnected = true;
+    lastConnectionError = null;
     connection.release();
     return true;
   } catch (error) {
-    console.error('✗ Database connection failed:', error.message);
+    dbConnected = false;
+    lastConnectionError = error.message;
+    console.error('✗ MySQL database connection failed:', error.message);
+    console.error(`  Host: ${process.env.DB_HOST || 'localhost'}:${process.env.DB_PORT || 3306}`);
+    console.error(`  Database: ${process.env.DB_NAME || 'milktracker'}`);
+    console.error(`  User: ${process.env.DB_USER || 'root'}`);
+    console.error(`  Error code: ${error.code || 'unknown'}`);
     return false;
   }
 };
+
+/**
+ * Get database connection status
+ */
+const getStatus = () => ({
+  connected: dbConnected,
+  lastError: lastConnectionError,
+  config: {
+    host: process.env.DB_HOST || 'localhost',
+    port: parseInt(process.env.DB_PORT) || 3306,
+    database: process.env.DB_NAME || 'milktracker',
+    user: process.env.DB_USER || 'root',
+  }
+});
 
 /**
  * Sanitize params - replace undefined/null with proper MySQL null,
@@ -56,9 +113,14 @@ const query = async (sql, params = []) => {
   try {
     const sanitized = sanitizeParams(params);
     const [results] = await pool.query(sql, sanitized);
+    dbConnected = true;
     return [results, null];
   } catch (error) {
-    console.error('Database query error:', error);
+    dbConnected = false;
+    lastConnectionError = error.message;
+    console.error('Database query error:', error.message);
+    console.error('  SQL:', sql.substring(0, 200));
+    console.error('  Error code:', error.code || 'unknown');
     throw error;
   }
 };
@@ -70,9 +132,12 @@ const transaction = async (callback) => {
     await connection.beginTransaction();
     const result = await callback(connection);
     await connection.commit();
+    dbConnected = true;
     return result;
   } catch (error) {
     await connection.rollback();
+    dbConnected = false;
+    lastConnectionError = error.message;
     throw error;
   } finally {
     connection.release();
@@ -95,6 +160,7 @@ const getMany = async (sql, params = []) => {
 const insert = async (sql, params = []) => {
   const sanitized = sanitizeParams(params);
   const [result] = await pool.query(sql, sanitized);
+  dbConnected = true;
   return result.insertId;
 };
 
@@ -102,6 +168,7 @@ const insert = async (sql, params = []) => {
 const update = async (sql, params = []) => {
   const sanitized = sanitizeParams(params);
   const [result] = await pool.query(sql, sanitized);
+  dbConnected = true;
   return result.affectedRows;
 };
 
@@ -109,17 +176,21 @@ const update = async (sql, params = []) => {
 const remove = async (sql, params = []) => {
   const sanitized = sanitizeParams(params);
   const [result] = await pool.query(sql, sanitized);
+  dbConnected = true;
   return result.affectedRows;
 };
 
 module.exports = {
   pool,
   testConnection,
+  getStatus,
   query,
   transaction,
   getOne,
   getMany,
   insert,
   update,
-  remove
+  remove,
+  camelizeRow,
+  camelizeRows
 };
