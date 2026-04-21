@@ -178,7 +178,9 @@ router.post('/login', [
     console.error('Login error:', error);
     res.status(500).json({
       success: false,
-      error: 'Login failed. Please try again.'
+      error: 'Login failed. Please try again.',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -334,7 +336,9 @@ router.post('/change-password', authenticate, [
     console.error('Change password error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to change password'
+      error: 'Failed to change password',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -390,7 +394,9 @@ router.post('/reset-password', authenticate, async (req, res) => {
     console.error('Reset password error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to reset password'
+      error: 'Failed to reset password',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });

@@ -91,7 +91,7 @@ export function useUsers() {
     try {
       const response = await usersApi.getStations();
       if (response.success) {
-        setStations(response.data.map((s: any) => ({ id: s.id, name: s.name, unit: s.location || 'General', floor: 'Unknown', isActive: s.isActive })));
+        setStations(response.data.map((s: any) => ({ id: s.id, name: s.name, unit: s.location || 'General', floor: 'Unknown', isActive: s.isActive === 1 || s.isActive === '1' || s.isActive === true })));
       }
     } catch (err) {
       console.error('Failed to load stations:', err);

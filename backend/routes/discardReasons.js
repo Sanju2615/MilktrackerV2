@@ -7,6 +7,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../utils/db');
+const { camelizeRow, camelizeRows } = require('../utils/db');
 const auditService = require('../services/auditService');
 
 const router = express.Router();
@@ -36,13 +37,15 @@ router.get('/', async (req, res) => {
 
     res.json({
       success: true,
-      data: reasons
+      data: camelizeRows(reasons)
     });
   } catch (error) {
     console.error('Get discard reasons error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve discard reasons'
+      error: 'Failed to retrieve discard reasons',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -69,13 +72,15 @@ router.get('/:id', async (req, res) => {
 
     res.json({
       success: true,
-      data: reasons[0]
+      data: camelizeRow(reasons[0])
     });
   } catch (error) {
     console.error('Get discard reason error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve discard reason'
+      error: 'Failed to retrieve discard reason',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -141,7 +146,9 @@ router.post('/', [
     console.error('Create discard reason error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to create discard reason'
+      error: 'Failed to create discard reason',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -218,7 +225,9 @@ router.put('/:id', async (req, res) => {
     console.error('Update discard reason error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to update discard reason'
+      error: 'Failed to update discard reason',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -268,7 +277,9 @@ router.put('/:id/toggle', async (req, res) => {
     console.error('Toggle discard reason error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to toggle discard reason'
+      error: 'Failed to toggle discard reason',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -320,7 +331,9 @@ router.delete('/:id', async (req, res) => {
     console.error('Delete discard reason error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to delete discard reason'
+      error: 'Failed to delete discard reason',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });

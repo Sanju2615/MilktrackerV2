@@ -61,7 +61,9 @@ router.get('/logs', [
     console.error('Get audit logs error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve audit logs'
+      error: 'Failed to retrieve audit logs',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -95,7 +97,9 @@ router.post('/log', async (req, res) => {
     console.error('Log action error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to log action'
+      error: 'Failed to log action',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -124,7 +128,9 @@ router.get('/stats', async (req, res) => {
     console.error('Get audit stats error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to retrieve audit statistics'
+      error: 'Failed to retrieve audit statistics',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });

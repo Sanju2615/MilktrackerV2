@@ -5,6 +5,7 @@
 
 const { v4: uuidv4 } = require('uuid');
 const db = require('../utils/db');
+const { camelizeRows } = require('../utils/db');
 
 /**
  * Helper: Check if a value is actually defined
@@ -133,7 +134,7 @@ const getLogs = async (filters = {}, page = 1, limit = 50) => {
     const [logs] = await db.query(sql, params);
     
     return {
-      logs,
+      logs: camelizeRows(logs),
       pagination: {
         page: pageNum,
         limit: limitNum,
@@ -163,7 +164,7 @@ const getStats = async (startDate, endDate) => {
     `;
     
     const [stats] = await db.query(sql, [startDate, endDate]);
-    return stats;
+    return camelizeRows(stats);
   } catch (error) {
     console.error('Get audit stats error:', error);
     throw error;

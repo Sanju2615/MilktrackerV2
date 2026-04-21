@@ -7,7 +7,6 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Checkbox } from '@/components/ui/checkbox';
-import { useEMR } from '@/hooks/useEMR';
 import type { EMRPatient, FeedingOrder, FeedingAdministration } from '@/types/emr';
 import { 
   CheckCircle2, 
@@ -32,10 +31,13 @@ import { toast } from 'sonner';
 
 interface ClosedLoopAdministrationProps {
   patient: EMRPatient;
+  patientOrders: FeedingOrder[];
+  administrations: FeedingAdministration[];
+  recordAdministration?: (admin: Omit<FeedingAdministration, 'id'>) => Promise<FeedingAdministration>;
+  isLoading?: boolean;
 }
 
-export function ClosedLoopAdministration({ patient }: ClosedLoopAdministrationProps) {
-  const { patientOrders, administrations, recordAdministration, isLoading } = useEMR();
+export function ClosedLoopAdministration({ patient, patientOrders, administrations, recordAdministration, isLoading = false }: ClosedLoopAdministrationProps) {
   const [selectedOrder, setSelectedOrder] = useState<FeedingOrder | null>(null);
   const [showAdminDialog, setShowAdminDialog] = useState(false);
   const [showConfirmation, setShowConfirmation] = useState(false);
@@ -52,6 +54,10 @@ export function ClosedLoopAdministration({ patient }: ClosedLoopAdministrationPr
 
   const handleAdminister = async () => {
     if (!selectedOrder) return;
+    if (!recordAdministration) {
+      toast.info('Administration recording will be available when the feeding API is configured');
+      return;
+    }
 
     try {
       const result = await recordAdministration({

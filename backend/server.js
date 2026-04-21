@@ -13,6 +13,7 @@ require('dotenv').config();
 
 const { errorHandler } = require('./middleware/errorHandler');
 const { authenticate } = require('./middleware/auth');
+const db = require('./utils/db');
 
 // Import routes
 const authRoutes = require('./routes/auth');
@@ -80,12 +81,61 @@ app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
 // Health check endpoint (PUBLIC - no auth required)
 app.get('/health', (req, res) => {
+  const dbStatus = db.getStatus();
   res.json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
     version: process.env.APP_VERSION || '1.0.0',
-    environment: process.env.NODE_ENV
+    environment: process.env.NODE_ENV,
+    database: {
+      mysql: dbStatus.connected ? 'connected' : 'disconnected',
+      lastError: dbStatus.lastError
+    }
   });
+});
+
+// MySQL Database health check (PUBLIC - no auth required)
+app.get('/api/v1/db/health', async (req, res) => {
+  try {
+    const connected = await db.testConnection();
+    if (connected) {
+      // Verify tables exist
+      const [tables] = await db.query(
+        `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES 
+         WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME`,
+        [process.env.DB_NAME || 'milktracker']
+      );
+      const tableNames = tables.map(t => t.TABLE_NAME);
+
+      res.json({
+        success: true,
+        message: 'MySQL database connected',
+        tables: tableNames,
+        config: {
+          host: process.env.DB_HOST || 'localhost',
+          port: process.env.DB_PORT || '3306',
+          database: process.env.DB_NAME || 'milktracker'
+        }
+      });
+    } else {
+      res.status(503).json({
+        success: false,
+        message: 'MySQL database connection failed',
+        error: db.getStatus().lastError,
+        config: {
+          host: process.env.DB_HOST || 'localhost',
+          port: process.env.DB_PORT || '3306',
+          database: process.env.DB_NAME || 'milktracker'
+        }
+      });
+    }
+  } catch (error) {
+    res.status(503).json({
+      success: false,
+      message: 'MySQL database health check failed',
+      error: error.message
+    });
+  }
 });
 
 // TrakCare health check (PUBLIC - no auth required)
@@ -168,6 +218,18 @@ app.listen(PORT, () => {
 ║                                                              ║
 ╚══════════════════════════════════════════════════════════════╝
   `);
+
+  // Test MySQL database connection on startup
+  db.testConnection()
+    .then(connected => {
+      if (!connected) {
+        console.warn('⚠ MySQL database not reachable on startup');
+        console.warn('  Users, audit logs, inventory, feeding APIs will not work');
+        console.warn('  TrakCare patient/order queries will still work via IRIS');
+        console.warn('  Run database/schema.sql to create the database and tables');
+      }
+    })
+    .catch(err => console.warn('⚠ MySQL startup check error:', err.message));
 
   // Auto-connect to TrakCare on startup
   try {

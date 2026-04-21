@@ -5,6 +5,7 @@
 
 const express = require('express');
 const db = require('../utils/db');
+const { camelizeRow, camelizeRows } = require('../utils/db');
 
 const router = express.Router();
 
@@ -60,16 +61,18 @@ router.get('/daily-summary', async (req, res) => {
       success: true,
       data: {
         date: reportDate,
-        collections,
-        administrations,
-        discards: discards[0]
+        collections: camelizeRows(collections),
+        administrations: camelizeRows(administrations),
+        discards: camelizeRow(discards[0])
       }
     });
   } catch (error) {
     console.error('Daily summary report error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to generate daily summary'
+      error: 'Failed to generate daily summary',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -117,13 +120,15 @@ router.get('/patient-usage', async (req, res) => {
 
     res.json({
       success: true,
-      data: usage
+      data: camelizeRows(usage)
     });
   } catch (error) {
     console.error('Patient usage report error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to generate patient usage report'
+      error: 'Failed to generate patient usage report',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -148,13 +153,15 @@ router.get('/inventory-status', async (req, res) => {
 
     res.json({
       success: true,
-      data: status
+      data: camelizeRows(status)
     });
   } catch (error) {
     console.error('Inventory status report error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to generate inventory status report'
+      error: 'Failed to generate inventory status report',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
@@ -180,14 +187,16 @@ router.get('/expiry', async (req, res) => {
       success: true,
       data: {
         expiringCount: expiring.length,
-        expiring
+        expiring: camelizeRows(expiring)
       }
     });
   } catch (error) {
     console.error('Expiry report error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to generate expiry report'
+      error: 'Failed to generate expiry report',
+      details: error.message,
+      code: error.code || undefined
     });
   }
 });
