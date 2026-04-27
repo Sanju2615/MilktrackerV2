@@ -88,13 +88,16 @@ function mapTrakCareOrderToFeedingOrder(order: any): FeedingOrder {
 
 function mapApiAdministrationToFeedingAdministration(admin: any): FeedingAdministration {
   return {
-    id: admin.id, patientId: admin.patientMrn, patientName: admin.patientName,
-    orderId: admin.orderId, milkInventoryId: admin.milkInventoryId, milkBarcode: admin.milkBarcode,
-    feedingType: admin.feedingType, volumeGiven: admin.volumeGiven,
+    id: String(admin.id),
+    patientId: admin.patientMrn, patientName: admin.patientName,
+    orderId: admin.orderId, milkInventoryId: admin.milkInventoryId, milkBarcode: admin.barcode,
+    feedingType: admin.feedingType, volumeGiven: admin.volumeGivenMl || admin.volumeGiven,
     administeredAt: safeDate(admin.administeredAt),
+    scheduledTime: safeDate(admin.administeredAt),
     administeredBy: admin.administeredByName || admin.administeredBy,
-    verifiedBy: admin.verifiedByName || admin.verifiedBy,
-    verifiedAt: admin.verifiedAt ? safeDate(admin.verifiedAt) : undefined,
+    verificationMethod: admin.verificationMethod === 'manual_override' ? 'manual_override' : 'barcode',
+    tolerance: admin.tolerance || 'well-tolerated',
+    status: admin.status || 'administered',
     notes: admin.notes,
   };
 }
@@ -188,39 +191,44 @@ export function useEMR() {
     setIsLoading(false);
   }, []);
 
-  const recordAdministration = useCallback(async (admin: Omit<FeedingAdministration, 'id'>): Promise<FeedingAdministration> => {
+  const recordAdministration = useCallback(async (admin: Omit<FeedingAdministration, 'id'>): Promise<FeedingAdministration & { milkVolume?: any }> => {
     if (!isAuthenticated()) throw new Error('Please login first');
     setIsLoading(true);
     try {
+      // CRITICAL: Always use the actual MRN (patient.mrn), NOT the TrakCare patientId.
+      // ClosedLoopAdministration must send patientMrn explicitly.
+      const mrn = (admin as any).patientMrn || admin.patientId;
       const response = await feedingApi.administer({
-        patientMrn: admin.patientId, patientName: admin.patientName || '',
-        milkInventoryId: admin.milkInventoryId, milkBarcode: admin.milkBarcode,
-        orderId: admin.orderId, volumeGiven: admin.volumeGiven,
-        feedingType: admin.feedingType, notes: admin.notes,
+        patientMrn: mrn,
+        patientName: admin.patientName || '',
+        milkInventoryId: admin.milkInventoryId,
+        barcode: admin.milkBarcode,
+        orderId: admin.orderId,
+        volumeGiven: admin.volumeGiven,
+        volumeOrdered: (admin as any).volumeOrdered,
+        feedingType: admin.feedingType,
+        route: 'oral',
+        administeredAt: new Date().toISOString(),
+        tolerance: admin.tolerance || 'good',
+        notes: admin.notes,
+        verificationMethod: admin.verificationMethod || 'barcode',
+        overrideCategory: admin.overrideCategory,
+        overrideJustification: admin.overrideJustification,
       });
       if (!response.success) throw new Error(response.message || 'Failed to record administration');
-      const adminResponse = await feedingApi.getAdministrations({ patientMrn: admin.patientId });
+      
+      // Extract milkVolume info from response
+      const milkVolume = response.data?.milkVolume || null;
+      
+      const adminResponse = await feedingApi.getAdministrations({ patientMrn: mrn });
       if (adminResponse.success && adminResponse.data.length > 0) {
         const newAdmin = mapApiAdministrationToFeedingAdministration(adminResponse.data[0]);
         setAdministrations(prev => [newAdmin, ...prev]);
-        return newAdmin;
+        return { ...newAdmin, milkVolume };
       }
       throw new Error('Failed to retrieve recorded administration');
     } finally { setIsLoading(false); }
   }, []);
-
-  const verifyAdministration = useCallback(async (administrationId: string) => {
-    if (!isAuthenticated()) throw new Error('Please login first');
-    try {
-      await feedingApi.verify(administrationId);
-      if (selectedPatient) {
-        const response = await feedingApi.getAdministrations({ patientMrn: selectedPatient.mrn });
-        if (response.success) setAdministrations(response.data.map(mapApiAdministrationToFeedingAdministration));
-      }
-    } catch (err: any) {
-      setError(err.message || 'Failed to verify administration');
-    }
-  }, [selectedPatient]);
 
   const clearSelectedPatient = useCallback(() => {
     setSelectedPatient(null);
@@ -231,6 +239,6 @@ export function useEMR() {
   return {
     patients, selectedPatient, patientOrders, administrations, isLoading, error, emrConnected,
     loadPatients, searchPatients, getPatientByMrn, selectPatient, clearSelectedPatient,
-    recordAdministration, verifyAdministration, checkConnectivity,
+    recordAdministration, checkConnectivity,
   };
 }

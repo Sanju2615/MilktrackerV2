@@ -45,7 +45,10 @@ export interface FeedingAdministration {
   id: string;
   orderId: string;
   patientId: string;
-  administeredBy: string; // Nurse/Provider ID
+  patientName?: string;
+  milkInventoryId?: string;
+  milkBarcode?: string;
+  administeredBy: string; // Nurse name auto-populated from login session
   administeredAt: Date;
   scheduledTime: Date;
   feedingType: string;
@@ -58,8 +61,9 @@ export interface FeedingAdministration {
   stool?: 'none' | 'normal' | 'loose' | 'watery';
   weight?: number;
   notes?: string;
-  verificationMethod: 'barcode' | 'manual';
-  verifiedBy?: string; // Second nurse verification for HIMSS 6
+  verificationMethod: 'barcode' | 'manual_override';
+  overrideCategory?: string;
+  overrideJustification?: string;
   status: 'administered' | 'refused' | 'held' | 'missed';
 }
 

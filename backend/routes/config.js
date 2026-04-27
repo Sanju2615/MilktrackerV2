@@ -4,6 +4,7 @@
 
 const express = require('express');
 const db = require('../utils/db');
+const { camelizeRow, camelizeRows } = require('../utils/db');
 const auditService = require('../services/auditService');
 
 const router = express.Router();
@@ -61,7 +62,7 @@ router.get('/:key', async (req, res) => {
 
     res.json({
       success: true,
-      data: config[0]
+      data: camelizeRow(config[0])
     });
   } catch (error) {
     console.error('Get config error:', error);

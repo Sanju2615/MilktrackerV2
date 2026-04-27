@@ -55,11 +55,14 @@ class DiscardReasonService {
   }
 
   async toggleReasonActive(id: string): Promise<boolean> {
-    const reason = await this.getReasonById(id);
-    if (!reason) return false;
-    const response = await discardReasonsApi.update(id, { isActive: !reason.isActive });
-    if (response.success) { await this.getAllReasons(); return true; }
-    return false;
+    try {
+      const response = await discardReasonsApi.toggle(id);
+      if (response.success) { await this.getAllReasons(); return true; }
+      return false;
+    } catch (error) {
+      console.error('Failed to toggle discard reason:', error);
+      return false;
+    }
   }
 
   async deleteReason(id: string): Promise<boolean> {
@@ -69,6 +72,43 @@ class DiscardReasonService {
   }
 
   async valueExists(value: string, excludeId?: string): Promise<boolean> { const reasons = await this.getAllReasons(); return reasons.some(r => r.value === value && r.id !== excludeId); }
+
+  async resetToDefaults(): Promise<void> {
+    // Re-fetch all reasons from backend (which has system defaults)
+    await this.getAllReasons();
+  }
+
+  exportToJSON(): string {
+    return JSON.stringify(this.cache || [], null, 2);
+  }
+
+  async importFromJSON(json: string): Promise<boolean> {
+    try {
+      const parsed = JSON.parse(json);
+      if (!Array.isArray(parsed)) return false;
+      // Import each reason
+      for (const reason of parsed) {
+        if (reason.value && reason.label && reason.description) {
+          try {
+            await this.addReason({
+              value: reason.value,
+              label: reason.label,
+              description: reason.description,
+              iconName: reason.iconName || 'FileText',
+              isActive: reason.isActive !== false,
+              requiresNotes: reason.requiresNotes || false,
+            });
+          } catch {
+            // Skip duplicates
+          }
+        }
+      }
+      await this.getAllReasons();
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }
 
 export const discardReasonService = new DiscardReasonService();

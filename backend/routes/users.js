@@ -6,7 +6,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { body, param, validationResult } = require('express-validator');
-const { v4: uuidv4 } = require('uuid');
+// No UUID needed - all IDs are AUTO_INCREMENT integers
 const db = require('../utils/db');
 const { camelizeRow, camelizeRows } = require('../utils/db');
 const auditService = require('../services/auditService');
@@ -85,9 +85,33 @@ router.get('/', async (req, res) => {
     sql += ` ORDER BY u.first_name, u.last_name LIMIT ${limit} OFFSET ${offset}`;
     const [users] = await db.query(sql, params);
 
+    // Fetch assigned stations for all users in this page
+    const userIds = users.map(u => u.id);
+    let stationsMap = {};
+    if (userIds.length > 0) {
+      const placeholders = userIds.map(() => '?').join(',');
+      const [userStations] = await db.query(
+        `SELECT us.user_id, s.id, s.name, s.code, us.is_primary
+         FROM user_stations us
+         JOIN nurse_stations s ON us.station_id = s.id
+         WHERE us.user_id IN (${placeholders}) AND s.is_active = true`,
+        userIds
+      );
+      for (const row of userStations) {
+        if (!stationsMap[row.user_id]) stationsMap[row.user_id] = [];
+        stationsMap[row.user_id].push({ id: row.id, name: row.name, code: row.code, isPrimary: row.is_primary });
+      }
+    }
+
+    // Merge stations into user objects
+    const usersWithStations = users.map(u => ({
+      ...u,
+      assignedStations: stationsMap[u.id] || []
+    }));
+
     res.json({
       success: true,
-      data: camelizeRows(users),
+      data: camelizeRows(usersWithStations),
       pagination: {
         page: page,
         limit: limit,
@@ -205,19 +229,19 @@ router.post('/', [
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // Create user
-    const userId = uuidv4();
-    await db.query(
+    const [userResult] = await db.query(
       `INSERT INTO users 
-        (id, employee_id, username, password_hash, first_name, last_name, email, phone, role, primary_station_id, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [userId, employeeId, username, hashedPassword, firstName, lastName, email, phone, role, primaryStationId, req.user.id]
+        (employee_id, username, password_hash, first_name, last_name, email, phone, role, primary_station_id, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [employeeId, username, hashedPassword, firstName, lastName, email, phone || null, role, primaryStationId || null, req.user.id]
     );
+    const userId = userResult.insertId;
 
     // Assign to primary station if provided
     if (primaryStationId) {
       await db.query(
-        'INSERT INTO user_stations (id, user_id, station_id, is_primary, assigned_by) VALUES (?, ?, ?, true, ?)',
-        [uuidv4(), userId, primaryStationId, req.user.id]
+        'INSERT INTO user_stations (user_id, station_id, is_primary, assigned_by) VALUES (?, ?, true, ?)',
+        [userId, primaryStationId, req.user.id]
       );
     }
 
@@ -290,11 +314,15 @@ router.put('/:id', [
       });
     }
 
-    values.push(id);
+    // Append updated_by and WHERE id params
+    setClause.push('updated_at = NOW()');
+    setClause.push('updated_by = ?');
+    values.push(req.user.id);
+    values.push(id); // WHERE id = ?
 
     await db.query(
-      `UPDATE users SET ${setClause.join(', ')}, updated_at = NOW(), updated_by = ? WHERE id = ?`,
-      [...values.slice(0, -1), req.user.id, id]
+      `UPDATE users SET ${setClause.join(', ')} WHERE id = ?`,
+      values
     );
 
     await auditService.log({
@@ -328,7 +356,7 @@ router.put('/:id', [
 router.put('/:id/status', [
   requirePermission('user_edit'),
   body('status').isIn(['active', 'inactive', 'locked']),
-  body('reason').notEmpty()
+  body('reason').optional().trim()
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -342,8 +370,17 @@ router.put('/:id/status', [
     const { id } = req.params;
     const { status, reason } = req.body;
 
+    // Verify user exists
+    const [users] = await db.query('SELECT id FROM users WHERE id = ?', [id]);
+    if (users.length === 0) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+
+    // If activating a locked account, also reset login attempts
+    const extraSet = status === 'active' ? ', login_attempts = 0' : '';
+
     await db.query(
-      'UPDATE users SET status = ?, updated_at = NOW(), updated_by = ? WHERE id = ?',
+      `UPDATE users SET status = ?${extraSet}, updated_at = NOW(), updated_by = ? WHERE id = ?`,
       [status, req.user.id, id]
     );
 
@@ -353,7 +390,7 @@ router.put('/:id/status', [
       action: 'change_user_status',
       entityType: 'user',
       entityId: id,
-      details: `Status changed to ${status}. Reason: ${reason}`
+      details: `Status changed to ${status}${reason ? '. Reason: ' + reason : ''}`
     });
 
     res.json({
@@ -399,8 +436,8 @@ router.put('/:id/stations', [
       // Add new assignments
       for (const stationId of stationIds) {
         await conn.execute(
-          'INSERT INTO user_stations (id, user_id, station_id, is_primary, assigned_by) VALUES (?, ?, ?, ?, ?)',
-          [uuidv4(), id, stationId, stationId === primaryStationId, req.user.id]
+          'INSERT INTO user_stations (user_id, station_id, is_primary, assigned_by) VALUES (?, ?, ?, ?)',
+          [id, stationId, stationId === primaryStationId, req.user.id]
         );
       }
 
@@ -438,6 +475,64 @@ router.put('/:id/stations', [
 });
 
 // ==================== STATIONS ROUTES ====================
+
+/**
+ * POST /api/v1/users/:id/reset-password
+ * Reset a user's password (admin/nurse_manager)
+ */
+router.post('/:id/reset-password', [
+  requirePermission('user_edit'),
+  body('newPassword').isLength({ min: 8 }).withMessage('Password must be at least 8 characters')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        errors: errors.array()
+      });
+    }
+
+    const { id } = req.params;
+    const { newPassword } = req.body;
+
+    // Verify user exists
+    const [users] = await db.query('SELECT id, first_name, last_name FROM users WHERE id = ?', [id]);
+    if (users.length === 0) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await db.query(
+      'UPDATE users SET password_hash = ?, password_changed_at = NOW(), login_attempts = 0, updated_at = NOW(), updated_by = ? WHERE id = ?',
+      [hashedPassword, req.user.id, id]
+    );
+
+    await auditService.log({
+      userId: req.user.id,
+      userName: `${req.user.firstName} ${req.user.lastName}`,
+      action: 'reset_password',
+      entityType: 'user',
+      entityId: id,
+      details: `Password reset for ${users[0].first_name} ${users[0].last_name} by administrator`
+    });
+
+    res.json({
+      success: true,
+      message: 'Password reset successfully'
+    });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to reset password',
+      details: error.message,
+      code: error.code || undefined
+    });
+  }
+});
+
+// ==================== STATIONS ROUTES (nested under /users) ====================
 
 /**
  * GET /api/v1/users/stations

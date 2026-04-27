@@ -94,13 +94,38 @@ const getStatus = () => ({
 });
 
 /**
+ * Convert an ISO 8601 datetime string (with 'T' and/or 'Z' suffix) to
+ * MySQL-compatible 'YYYY-MM-DD HH:MM:SS' format.
+ * Leaves non-matching strings and other types untouched.
+ */
+const toMySQLDatetime = (val) => {
+  if (typeof val !== 'string') return val;
+  // Match ISO 8601: 2026-04-22T04:02:00.000Z  or  2026-04-22T04:02:00Z  or  2026-04-22T04:02:00+00:00
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(val)) {
+    const d = new Date(val);
+    if (!isNaN(d.getTime())) {
+      // Format as local MySQL datetime (server TZ)
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+  }
+  return val;
+};
+
+/**
  * Sanitize params - replace undefined/null with proper MySQL null,
+ * convert ISO 8601 datetime strings to MySQL format,
  * and ensure numeric LIMIT/OFFSET values are actual numbers.
  */
 const sanitizeParams = (params = []) => {
   return params.map(p => {
     if (p === undefined) return null;
-    return p;
+    if (p instanceof Date) {
+      // Convert JS Date objects to MySQL datetime
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${p.getFullYear()}-${pad(p.getMonth() + 1)}-${pad(p.getDate())} ${pad(p.getHours())}:${pad(p.getMinutes())}:${pad(p.getSeconds())}`;
+    }
+    return toMySQLDatetime(p);
   });
 };
 
@@ -158,26 +183,53 @@ const getMany = async (sql, params = []) => {
 
 // Insert and return ID
 const insert = async (sql, params = []) => {
-  const sanitized = sanitizeParams(params);
-  const [result] = await pool.query(sql, sanitized);
-  dbConnected = true;
-  return result.insertId;
+  try {
+    const sanitized = sanitizeParams(params);
+    const [result] = await pool.query(sql, sanitized);
+    dbConnected = true;
+    return result.insertId;
+  } catch (error) {
+    dbConnected = false;
+    lastConnectionError = error.message;
+    console.error('Database insert error:', error.message);
+    console.error('  SQL:', sql.substring(0, 200));
+    console.error('  Error code:', error.code || 'unknown');
+    throw error;
+  }
 };
 
 // Update and return affected rows
 const update = async (sql, params = []) => {
-  const sanitized = sanitizeParams(params);
-  const [result] = await pool.query(sql, sanitized);
-  dbConnected = true;
-  return result.affectedRows;
+  try {
+    const sanitized = sanitizeParams(params);
+    const [result] = await pool.query(sql, sanitized);
+    dbConnected = true;
+    return result.affectedRows;
+  } catch (error) {
+    dbConnected = false;
+    lastConnectionError = error.message;
+    console.error('Database update error:', error.message);
+    console.error('  SQL:', sql.substring(0, 200));
+    console.error('  Error code:', error.code || 'unknown');
+    throw error;
+  }
 };
 
 // Delete and return affected rows
 const remove = async (sql, params = []) => {
-  const sanitized = sanitizeParams(params);
-  const [result] = await pool.query(sql, sanitized);
-  dbConnected = true;
-  return result.affectedRows;
+  try {
+    const sanitized = sanitizeParams(params);
+    const [result] = await pool.query(sql, sanitized);
+    dbConnected = true;
+    return result.affectedRows;
+  } catch (error) {
+    dbConnected = false;
+    lastConnectionError = error.message;
+    console.error('Database delete error:', error.message);
+    console.error('  SQL:', sql.substring(0, 200));
+    console.error('  Error code:', error.code || 'unknown');
+    throw error;
+  }
 };
 
 module.exports = {
@@ -192,5 +244,6 @@ module.exports = {
   update,
   remove,
   camelizeRow,
-  camelizeRows
+  camelizeRows,
+  toMySQLDatetime
 };

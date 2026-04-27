@@ -179,6 +179,7 @@ router.put('/:id', async (req, res) => {
       });
     }
 
+    updates.push('updated_at = NOW()');
     values.push(id);
     await db.query(
       `UPDATE nurse_stations SET ${updates.join(', ')} WHERE id = ?`,

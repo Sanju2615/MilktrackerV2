@@ -1,19 +1,30 @@
-import { useState, useEffect } from 'react';
+/**
+ * Milk Preparation Screen
+ * 
+ * Patient-context based: only accessible when a patient is selected.
+ * Displays patient milk inventory in FEFO order (First Expired First Out).
+ * Expired milk is shown in red and cannot be selected.
+ * Selecting a valid batch opens a detail view that:
+ *   - Deducts the ordered volume from the milk container
+ *   - Updates inventory volume
+ *   - Generates a prep barcode
+ *   - Prints a prepared-milk label
+ *   - Sets milk status to "Reserved"
+ */
+
+import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { useInventory } from '@/hooks/useInventory';
-import type { MilkInventory } from '@/types/inventory';
-import { 
-  FlaskConical, 
-  Thermometer, 
-  Snowflake, 
-  Droplets, 
+import { milkApi } from '@/services/api';
+import type { EMRPatient, FeedingOrder } from '@/types/emr';
+import {
+  FlaskConical,
+  Droplets,
   CheckCircle2,
   AlertCircle,
-  ArrowRight,
   Clock,
   Package,
   Baby,
@@ -21,8 +32,11 @@ import {
   Search,
   Barcode,
   Printer,
-  UserCheck,
-  RotateCcw
+  RotateCcw,
+  AlertTriangle,
+  RefreshCw,
+  Snowflake,
+  Thermometer,
 } from 'lucide-react';
 import {
   Dialog,
@@ -32,225 +46,193 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { toast } from 'sonner';
 import JsBarcode from 'jsbarcode';
 
-// Fortification recipes
-const FORTIFICATION_RECIPES = [
-  { id: 'none', name: 'No Fortification', description: 'Plain breast milk', calories: 20 },
-  { id: '22_kcal', name: '22 kcal/oz', description: '50ml + 1 packet HMF (5ml)', calories: 22 },
-  { id: '24_kcal', name: '24 kcal/oz', description: '25ml + 1 packet HMF (5ml)', calories: 24 },
-  { id: 'neosure_22', name: 'Neosure 22 kcal/oz', description: '3oz + 0.5 tsp powder', calories: 22 },
-  { id: 'neosure_24', name: 'Neosure 24 kcal/oz', description: '3oz + 1 tsp powder', calories: 24 },
-];
-
-interface PreparationState {
-  milkId: string | null;
-  step: 'selection' | 'retrieval' | 'thaw' | 'warm' | 'fortify' | 'label' | 'verify' | 'complete';
-  retrieval: { completed: boolean; by: string; at?: Date };
-  thaw: { completed: boolean; by: string; method: 'refrigerator' | 'water_bath' | 'warmer'; startedAt?: Date; completedAt?: Date };
-  warm: { completed: boolean; by: string; method: 'waterless_warmer' | 'water_bath'; temp: number; completedAt?: Date };
-  fortify: { completed: boolean; by: string; recipe: string; verifiedBy?: string; completedAt?: Date };
-  label: { completed: boolean; by: string; newBarcode: string; completedAt?: Date };
-  verify: { completed: boolean; by: string; secondVerifier?: string; completedAt?: Date };
+// Milk item as returned from the backend API
+interface MilkInventoryItem {
+  id: number | string;
+  barcode: string;
+  volumeMl: number;
+  volume_ml?: number;
+  patientMrn: string;
+  patient_mrn?: string;
+  patientName?: string;
+  patient_name?: string;
+  milkType: string;
+  milk_type?: string;
+  status: string;
+  expiresAt: string;
+  expires_at?: string;
+  expressedAt: string;
+  expressed_at?: string;
+  storageLocation?: string;
+  storage_location?: string;
+  storageUnitName?: string;
+  storage_unit_name?: string;
+  shelfPosition?: string;
+  shelf_position?: string;
 }
 
-export function MilkPreparation() {
-  const { inventory } = useInventory();
-  
-  const [availableMilk, setAvailableMilk] = useState<MilkInventory[]>([]);
-  const [selectedMilk, setSelectedMilk] = useState<MilkInventory | null>(null);
+interface MilkPreparationProps {
+  patient: EMRPatient;
+  patientOrders: FeedingOrder[];
+}
+
+export function MilkPreparation({ patient, patientOrders }: MilkPreparationProps) {
+  const [patientMilk, setPatientMilk] = useState<MilkInventoryItem[]>([]);
+  const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [prepState, setPrepState] = useState<PreparationState>({
-    milkId: null,
-    step: 'selection',
-    retrieval: { completed: false, by: '' },
-    thaw: { completed: false, by: '', method: 'refrigerator' },
-    warm: { completed: false, by: '', method: 'waterless_warmer', temp: 37 },
-    fortify: { completed: false, by: '', recipe: 'none' },
-    label: { completed: false, by: '', newBarcode: '' },
-    verify: { completed: false, by: '' },
-  });
-  
-  const [showSecondVerifyDialog, setShowSecondVerifyDialog] = useState(false);
-  const [secondVerifierName, setSecondVerifierName] = useState('');
-  const [preparedFeedings, setPreparedFeedings] = useState<Array<{
-    id: string;
+
+  // Detail / preparation state
+  const [selectedMilk, setSelectedMilk] = useState<MilkInventoryItem | null>(null);
+  const [showDetailDialog, setShowDetailDialog] = useState(false);
+  const [prepVolume, setPrepVolume] = useState<string>('');
+  const [isPreparing, setIsPreparing] = useState(false);
+
+  // Completed preparation result
+  const [prepResult, setPrepResult] = useState<{
+    prepBarcode: string;
     originalBarcode: string;
-    newBarcode: string;
-    preparedAt: Date;
-    expiresAt: Date;
-    volume: number;
-    recipe: string;
+    deductedVolume: number;
+    remainingVolume: number;
     patientName: string;
+    milkId: number | string;
+  } | null>(null);
+  const [showResultDialog, setShowResultDialog] = useState(false);
+
+  // Prepared items list (local session)
+  const [preparedItems, setPreparedItems] = useState<Array<{
+    prepBarcode: string;
+    originalBarcode: string;
+    volume: number;
+    patientName: string;
+    preparedAt: Date;
   }>>([]);
 
-  // Filter available milk for preparation
-  useEffect(() => {
-    const filtered = inventory.filter(m => 
-      m.status === 'available' && 
-      (m.storageLocation === 'refrigerator' || m.storageLocation === 'freezer')
-    );
-    setAvailableMilk(filtered);
-  }, [inventory]);
+  // Helpers
+  const getMilkVolume = (item: MilkInventoryItem) => item.volumeMl || item.volume_ml || 0;
+  const getMilkBarcode = (item: MilkInventoryItem) => item.barcode;
+  const getMilkType = (item: MilkInventoryItem) => item.milkType || item.milk_type || 'breast_milk';
+  const getMilkExpiry = (item: MilkInventoryItem) => item.expiresAt || item.expires_at || '';
+  const getMilkStorage = (item: MilkInventoryItem) => item.storageLocation || item.storage_location || '';
+  const getMilkStorageUnit = (item: MilkInventoryItem) => item.storageUnitName || item.storage_unit_name || '';
+  const getMilkPatientName = (item: MilkInventoryItem) => item.patientName || item.patient_name || '';
 
-  const filteredMilk = availableMilk.filter(m => 
-    m.barcode.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    m.patientName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    m.storageUnit?.toLowerCase().includes(searchTerm.toLowerCase())
+  const isExpired = (item: MilkInventoryItem) => {
+    const expiry = getMilkExpiry(item);
+    return expiry ? new Date(expiry) < new Date() : false;
+  };
+
+  const getHoursToExpiry = (item: MilkInventoryItem) => {
+    const expiry = getMilkExpiry(item);
+    if (!expiry) return Infinity;
+    return (new Date(expiry).getTime() - Date.now()) / (1000 * 60 * 60);
+  };
+
+  // Fetch patient milk sorted FEFO (already sorted by backend: expires_at ASC)
+  const fetchPatientMilk = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await milkApi.getPatientMilk(patient.mrn);
+      if (response.success && Array.isArray(response.data)) {
+        // Backend returns available + reserved sorted by expires_at ASC
+        // For prep we only show "available" milk (not already reserved)
+        const available = response.data.filter((m: MilkInventoryItem) => m.status === 'available');
+        setPatientMilk(available);
+      }
+    } catch (err) {
+      console.warn('Failed to fetch patient milk:', err);
+      toast.error('Failed to load milk inventory');
+    } finally {
+      setLoading(false);
+    }
+  }, [patient.mrn]);
+
+  useEffect(() => {
+    fetchPatientMilk();
+  }, [fetchPatientMilk]);
+
+  // Filter by search term
+  const filteredMilk = patientMilk.filter(m =>
+    getMilkBarcode(m).toLowerCase().includes(searchTerm.toLowerCase()) ||
+    getMilkType(m).toLowerCase().includes(searchTerm.toLowerCase()) ||
+    getMilkStorageUnit(m).toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const getMilkIcon = (type: string) => {
-    switch (type) {
-      case 'breast_milk': return <Baby className="w-4 h-4 text-pink-500" />;
-      case 'donor_milk': return <Droplets className="w-4 h-4 text-blue-500" />;
-      case 'formula': return <Milk className="w-4 h-4 text-green-500" />;
-      default: return <Milk className="w-4 h-4" />;
+  // Get the active order's volume (auto-fill)
+  const activeOrder = patientOrders.find(o => o.status === 'active');
+
+  // Select a milk item for preparation
+  const handleSelectMilk = (item: MilkInventoryItem) => {
+    if (isExpired(item)) {
+      toast.error('This milk has expired and cannot be used for preparation');
+      return;
+    }
+    setSelectedMilk(item);
+    // Pre-fill with active order volume if available
+    setPrepVolume(activeOrder?.volume ? String(activeOrder.volume) : '');
+    setShowDetailDialog(true);
+  };
+
+  // Execute preparation
+  const handlePrepare = async () => {
+    if (!selectedMilk) return;
+    const vol = Number(prepVolume);
+    if (!vol || vol < 1) {
+      toast.error('Please enter a valid volume (minimum 1ml)');
+      return;
+    }
+    if (vol > getMilkVolume(selectedMilk)) {
+      toast.error(`Volume (${vol}ml) exceeds available volume (${getMilkVolume(selectedMilk)}ml)`);
+      return;
+    }
+
+    setIsPreparing(true);
+    try {
+      const response = await milkApi.prepare(String(selectedMilk.id), {
+        patientMrn: patient.mrn,
+        orderedVolume: vol,
+        orderId: activeOrder?.orderId,
+      });
+
+      if (response.success && response.data) {
+        const data = response.data;
+        const result = {
+          prepBarcode: data.prepBarcode,
+          originalBarcode: data.originalBarcode,
+          deductedVolume: data.deductedVolume,
+          remainingVolume: data.remainingVolume,
+          patientName: `${patient.firstName} ${patient.lastName}`,
+          milkId: data.milkId,
+        };
+        setPrepResult(result);
+        setPreparedItems(prev => [...prev, {
+          prepBarcode: data.prepBarcode,
+          originalBarcode: data.originalBarcode,
+          volume: data.deductedVolume,
+          patientName: `${patient.firstName} ${patient.lastName}`,
+          preparedAt: new Date(),
+        }]);
+        setShowDetailDialog(false);
+        setShowResultDialog(true);
+        toast.success('Milk prepared and reserved successfully');
+        // Refresh inventory list
+        await fetchPatientMilk();
+      } else {
+        toast.error(response.error || 'Failed to prepare milk');
+      }
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to prepare milk');
+    } finally {
+      setIsPreparing(false);
     }
   };
 
-  const getStatusBadge = (milk: MilkInventory) => {
-    const hoursToExpiry = (milk.expirationDate.getTime() - Date.now()) / (1000 * 60 * 60);
-    if (hoursToExpiry < 0) return <Badge variant="destructive">Expired</Badge>;
-    if (hoursToExpiry < 4) return <Badge variant="outline" className="bg-red-50 text-red-700">Expires Soon</Badge>;
-    if (hoursToExpiry < 24) return <Badge variant="outline" className="bg-amber-50 text-amber-700">Expires &lt;24h</Badge>;
-    return <Badge variant="outline" className="bg-green-50 text-green-700">Available</Badge>;
-  };
+  // Print the prepared milk label
+  const handlePrintLabel = () => {
+    if (!prepResult) return;
 
-  const selectMilkForPrep = (milk: MilkInventory) => {
-    setSelectedMilk(milk);
-    setPrepState({
-      milkId: milk.id,
-      step: 'retrieval',
-      retrieval: { completed: false, by: '' },
-      thaw: { completed: false, by: '', method: milk.storageLocation === 'freezer' ? 'refrigerator' : 'water_bath' },
-      warm: { completed: false, by: '', method: 'waterless_warmer', temp: 37 },
-      fortify: { completed: false, by: '', recipe: 'none' },
-      label: { completed: false, by: '', newBarcode: '' },
-      verify: { completed: false, by: '' },
-    });
-  };
-
-  const completeRetrieval = () => {
-    setPrepState(prev => ({
-      ...prev,
-      step: selectedMilk?.storageLocation === 'freezer' ? 'thaw' : 'warm',
-      retrieval: { completed: true, by: 'Current User', at: new Date() }
-    }));
-    toast.success('Milk retrieved from storage');
-  };
-
-  const completeThaw = () => {
-    setPrepState(prev => ({
-      ...prev,
-      step: 'warm',
-      thaw: { ...prev.thaw, completed: true, completedAt: new Date() }
-    }));
-    toast.success('Milk thawed successfully');
-  };
-
-  const completeWarm = () => {
-    setPrepState(prev => ({
-      ...prev,
-      step: 'fortify',
-      warm: { ...prev.warm, completed: true, completedAt: new Date() }
-    }));
-    toast.success(`Milk warmed to ${prepState.warm.temp}°C`);
-  };
-
-  const completeFortify = () => {
-    setPrepState(prev => ({
-      ...prev,
-      step: 'label',
-      fortify: { ...prev.fortify, completed: true, completedAt: new Date() }
-    }));
-    toast.success('Fortification added');
-  };
-
-  const generatePrepBarcode = () => {
-    if (!selectedMilk) return;
-    
-    const now = new Date();
-    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
-    const timeStr = now.toTimeString().slice(0, 5).replace(':', '');
-    const newBarcode = `${selectedMilk.barcode}-PREP-${dateStr}-${timeStr}`;
-    
-    setPrepState(prev => ({
-      ...prev,
-      label: { ...prev.label, newBarcode, completed: true, completedAt: new Date() }
-    }));
-    
-    return newBarcode;
-  };
-
-  const completeLabel = () => {
-    const newBarcode = generatePrepBarcode();
-    if (!newBarcode) return;
-    
-    setPrepState(prev => ({
-      ...prev,
-      step: 'verify'
-    }));
-    toast.success('Label generated. Print and apply to prepared feeding.');
-  };
-
-  const completeVerification = () => {
-    setShowSecondVerifyDialog(true);
-  };
-
-  const finalizePreparation = () => {
-    if (!selectedMilk || !prepState.label.newBarcode) return;
-    
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000); // 24 hours for prepared feeding
-    
-    const newFeeding = {
-      id: `prep-${Date.now()}`,
-      originalBarcode: selectedMilk.barcode,
-      newBarcode: prepState.label.newBarcode,
-      preparedAt: now,
-      expiresAt,
-      volume: selectedMilk.volume,
-      recipe: prepState.fortify.recipe,
-      patientName: selectedMilk.patientName || 'Unknown',
-    };
-    
-    setPreparedFeedings(prev => [...prev, newFeeding]);
-    setPrepState(prev => ({
-      ...prev,
-      step: 'complete',
-      verify: { ...prev.verify, completed: true, secondVerifier: secondVerifierName, completedAt: new Date() }
-    }));
-    
-    setShowSecondVerifyDialog(false);
-    setSecondVerifierName('');
-    toast.success('Preparation complete! Feeding ready for administration.');
-  };
-
-  const resetPreparation = () => {
-    setSelectedMilk(null);
-    setPrepState({
-      milkId: null,
-      step: 'selection',
-      retrieval: { completed: false, by: '' },
-      thaw: { completed: false, by: '', method: 'refrigerator' },
-      warm: { completed: false, by: '', method: 'waterless_warmer', temp: 37 },
-      fortify: { completed: false, by: '', recipe: 'none' },
-      label: { completed: false, by: '', newBarcode: '' },
-      verify: { completed: false, by: '' },
-    });
-  };
-
-  const printPrepLabel = () => {
-    if (!prepState.label.newBarcode || !selectedMilk) return;
-    
     const printWindow = window.open('', '_blank');
     if (!printWindow) {
       toast.error('Please allow popups to print labels');
@@ -258,66 +240,66 @@ export function MilkPreparation() {
     }
 
     const tempSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    JsBarcode(tempSvg, prepState.label.newBarcode, {
+    JsBarcode(tempSvg, prepResult.prepBarcode, {
       format: 'CODE128',
-      width: 2,
-      height: 60,
+      width: 1.5,
+      height: 50,
       displayValue: false,
       margin: 5,
     });
     const svgString = new XMLSerializer().serializeToString(tempSvg);
-    
-    const recipe = FORTIFICATION_RECIPES.find(r => r.id === prepState.fortify.recipe);
 
     const printContent = `
       <!DOCTYPE html>
       <html>
       <head>
-        <title>Prepared Feeding Label</title>
+        <title>Prepared Milk Label</title>
         <style>
           @page { size: auto; margin: 10mm; }
           body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: white; }
           .label {
-            border: 3px solid #0066cc;
+            border: 3px solid #003366;
             border-radius: 8px;
             padding: 15px;
             max-width: 300px;
             margin: 0 auto;
             text-align: center;
           }
-          .header { font-size: 14px; font-weight: bold; color: #0066cc; margin-bottom: 10px; }
+          .header { font-size: 14px; font-weight: bold; color: #003366; margin-bottom: 10px; }
           .patient-name { font-size: 16px; font-weight: bold; margin: 8px 0; }
+          .mrn { font-size: 13px; color: #444; }
           .details { font-size: 12px; margin: 8px 0; }
-          .barcode { margin: 10px 0; }
+          .barcode { margin: 10px auto; text-align: center; display: flex; justify-content: center; }
+          .barcode svg { max-width: 100%; height: auto; }
+          .barcode-text { font-family: monospace; font-size: 11px; word-break: break-all; }
           .warning { font-size: 11px; color: #c00; font-weight: bold; margin-top: 10px; }
           .expiry { font-size: 11px; color: #666; margin-top: 8px; }
-          @media print {
-            .no-print { display: none !important; }
-          }
+          .status { display: inline-block; background: #003366; color: white; padding: 2px 10px; border-radius: 4px; font-size: 12px; font-weight: bold; margin-top: 6px; }
+          @media print { .no-print { display: none !important; } }
         </style>
       </head>
       <body>
         <div class="label">
-          <div class="header">🏥 PREPARED FEEDING</div>
-          <div class="patient-name">${selectedMilk.patientName}</div>
-          <div class="details">MRN: ${selectedMilk.patientId || 'N/A'}</div>
+          <div class="header">PREPARED FEEDING - RESERVED</div>
+          <div class="patient-name">${prepResult.patientName}</div>
+          <div class="mrn">MRN: ${patient.mrn}</div>
           <div class="details">
-            <strong>${selectedMilk.volume}ml</strong> | ${recipe?.name || 'Plain'}
+            <strong>${prepResult.deductedVolume}ml</strong> prepared from ${prepResult.originalBarcode}
           </div>
           <div class="barcode">${svgString}</div>
-          <div style="font-family: monospace; font-size: 11px;">${prepState.label.newBarcode}</div>
+          <div class="barcode-text">${prepResult.prepBarcode}</div>
+          <div class="status">RESERVED</div>
           <div class="expiry">
             Prepared: ${new Date().toLocaleString()}<br>
             Use within: 24 hours
           </div>
           <div class="warning">
-            ⚠️ WARMED - USE IMMEDIATELY<br>
-            VERIFY PATIENT IDENTITY
+            VERIFY PATIENT IDENTITY BEFORE ADMINISTRATION
           </div>
         </div>
         <div class="no-print" style="text-align: center; margin-top: 20px;">
           <button onclick="window.print()" style="padding: 10px 20px; font-size: 16px; cursor: pointer;">
-            🖨️ Print Label
+            Print Label
           </button>
         </div>
       </body>
@@ -328,436 +310,387 @@ export function MilkPreparation() {
     printWindow.document.close();
   };
 
-  // Progress indicator
-  const steps = [
-    { id: 'selection', label: 'Select', icon: Package },
-    { id: 'retrieval', label: 'Retrieve', icon: Package },
-    { id: 'thaw', label: 'Thaw', icon: Snowflake },
-    { id: 'warm', label: 'Warm', icon: Thermometer },
-    { id: 'fortify', label: 'Fortify', icon: FlaskConical },
-    { id: 'label', label: 'Label', icon: Barcode },
-    { id: 'verify', label: 'Verify', icon: UserCheck },
-  ];
+  // Status badge for milk items
+  const getStatusBadge = (item: MilkInventoryItem) => {
+    const hrs = getHoursToExpiry(item);
+    if (hrs < 0) return <Badge variant="destructive">Expired</Badge>;
+    if (hrs < 4) return <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200">Expires Soon</Badge>;
+    if (hrs < 24) return <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200">Expires &lt;24h</Badge>;
+    return <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">Available</Badge>;
+  };
 
-  const currentStepIndex = steps.findIndex(s => s.id === prepState.step);
+  const getMilkIcon = (type: string) => {
+    switch (type) {
+      case 'breast_milk': return <Baby className="w-5 h-5 text-pink-500" />;
+      case 'donor_milk': return <Droplets className="w-5 h-5 text-blue-500" />;
+      case 'formula': return <Milk className="w-5 h-5 text-green-500" />;
+      default: return <Milk className="w-5 h-5" />;
+    }
+  };
 
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
             <FlaskConical className="w-6 h-6" />
             Milk Preparation
           </h2>
-          <p className="text-slate-500">Step 2: Retrieve, thaw, warm, fortify, and prepare feeding</p>
+          <p className="text-slate-500">
+            {patient.firstName} {patient.lastName} &bull; MRN: {patient.mrn}
+            {activeOrder && (
+              <span className="ml-2 text-blue-600">
+                &bull; Active Order: {activeOrder.volume}ml {activeOrder.feedingType.replace('_', ' ')} ({activeOrder.frequency})
+              </span>
+            )}
+          </p>
         </div>
+        <Button variant="outline" size="sm" onClick={fetchPatientMilk} disabled={loading}>
+          <RefreshCw className={`w-4 h-4 mr-1.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
+        </Button>
       </div>
 
-      {/* Progress Steps */}
-      {prepState.step !== 'selection' && prepState.step !== 'complete' && (
-        <div className="flex items-center justify-center gap-1 flex-wrap">
-          {steps.map((step, idx) => {
-            const Icon = step.icon;
-            const isActive = step.id === prepState.step;
-            const isCompleted = idx < currentStepIndex;
-            
-            return (
-              <div key={step.id} className="flex items-center">
-                <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs ${
-                  isActive ? 'bg-blue-100 text-blue-700' : 
-                  isCompleted ? 'bg-green-100 text-green-700' : 
-                  'bg-slate-100 text-slate-400'
-                }`}>
-                  <Icon className="w-3 h-3" />
-                  <span>{step.label}</span>
-                </div>
-                {idx < steps.length - 1 && (
-                  <ArrowRight className="w-3 h-3 text-slate-300 mx-1" />
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
+      {/* Search */}
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+        <Input
+          placeholder="Search by barcode, type, or storage unit..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          className="pl-10"
+        />
+      </div>
 
-      {/* Selection Step */}
-      {prepState.step === 'selection' && (
-        <Card>
-          <CardContent className="p-6 space-y-4">
-            <h3 className="font-semibold text-lg flex items-center gap-2">
-              <Package className="w-5 h-5" />
-              Select Milk for Preparation
-            </h3>
-            
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-              <Input
-                placeholder="Search by barcode, patient, or storage location..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10"
-              />
+      {/* FEFO Info */}
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800 flex items-start gap-2">
+        <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+        <span>
+          <strong>FEFO Order (First Expired First Out):</strong> Milk is sorted by expiration date. 
+          Use the earliest-expiring milk first. Expired items are shown in red and cannot be selected.
+        </span>
+      </div>
+
+      {/* Milk Inventory List (FEFO) */}
+      <Card>
+        <CardContent className="p-6">
+          <h3 className="font-semibold text-lg flex items-center gap-2 mb-4">
+            <Package className="w-5 h-5" />
+            Available Milk for {patient.firstName} {patient.lastName}
+            <Badge variant="outline" className="ml-2">{filteredMilk.length} items</Badge>
+          </h3>
+
+          {loading ? (
+            <div className="text-center py-8 text-slate-500">
+              <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+              Loading inventory...
             </div>
-
-            <div className="space-y-2 max-h-96 overflow-y-auto">
-              {filteredMilk.length === 0 ? (
-                <div className="text-center py-8 text-slate-500">
-                  <Package className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-                  <p>No available milk found</p>
-                  <p className="text-sm text-slate-400">Add milk to inventory first</p>
-                </div>
-              ) : (
-                filteredMilk.map((milk) => (
+          ) : filteredMilk.length === 0 ? (
+            <div className="text-center py-8 text-slate-500">
+              <Package className="w-12 h-12 mx-auto mb-3 text-slate-300" />
+              <p>No available milk found for this patient</p>
+              <p className="text-sm text-slate-400 mt-1">Use the Collect tab under Inventory to add milk first</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filteredMilk.map((item, idx) => {
+                const expired = isExpired(item);
+                const isFefoFirst = idx === 0 && !expired;
+                return (
                   <div
-                    key={milk.id}
-                    onClick={() => selectMilkForPrep(milk)}
-                    className="p-4 border rounded-lg hover:border-blue-300 hover:bg-blue-50 cursor-pointer transition-all"
+                    key={item.id || idx}
+                    onClick={() => handleSelectMilk(item)}
+                    className={`relative p-4 border-2 rounded-lg transition-all ${
+                      expired
+                        ? 'border-red-300 bg-red-50 cursor-not-allowed opacity-70'
+                        : isFefoFirst
+                        ? 'border-green-400 ring-2 ring-green-200 hover:shadow-md cursor-pointer'
+                        : 'border-slate-200 hover:border-blue-300 hover:bg-blue-50/30 cursor-pointer'
+                    }`}
                   >
+                    {isFefoFirst && (
+                      <Badge className="absolute -top-2 -right-2 bg-green-500 text-white text-[10px]">
+                        FEFO - Use First
+                      </Badge>
+                    )}
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center">
-                          {getMilkIcon(milk.milkType)}
+                        <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
+                          expired ? 'bg-red-100' : 'bg-slate-100'
+                        }`}>
+                          {getMilkIcon(getMilkType(item))}
                         </div>
                         <div>
                           <div className="flex items-center gap-2">
                             <Barcode className="w-3 h-3 text-slate-400" />
-                            <span className="font-mono text-sm">{milk.barcode}</span>
-                          </div>
-                          <p className="text-sm text-slate-600">{milk.patientName}</p>
-                          <div className="flex items-center gap-3 text-xs text-slate-500 mt-1">
-                            <span>{milk.volume}ml</span>
-                            <span className="flex items-center gap-1">
-                              {milk.storageLocation === 'freezer' ? <Snowflake className="w-3 h-3" /> : <Thermometer className="w-3 h-3" />}
-                              {milk.storageLocation === 'freezer' ? 'Frozen' : 'Refrigerated'}
+                            <span className={`font-mono text-sm ${expired ? 'text-red-600 line-through' : ''}`}>
+                              {getMilkBarcode(item)}
                             </span>
-                            <span>{milk.storageUnit}</span>
+                          </div>
+                          <p className={`text-lg font-bold ${expired ? 'text-red-600' : 'text-slate-800'}`}>
+                            {getMilkVolume(item)} <span className="text-sm font-normal">ml</span>
+                          </p>
+                          <div className="flex items-center gap-3 text-xs text-slate-500 mt-0.5">
+                            <span className="flex items-center gap-1">
+                              {getMilkStorage(item) === 'freezer' ? <Snowflake className="w-3 h-3" /> : <Thermometer className="w-3 h-3" />}
+                              {getMilkStorage(item) === 'freezer' ? 'Frozen' : 'Refrigerated'}
+                            </span>
+                            {getMilkStorageUnit(item) && <span>{getMilkStorageUnit(item)}</span>}
+                            <span className="flex items-center gap-1">
+                              <Clock className="w-3 h-3" />
+                              Exp: {getMilkExpiry(item) ? new Date(getMilkExpiry(item)).toLocaleDateString('en-GB') : 'N/A'}
+                            </span>
+                            <span>
+                              {getMilkType(item) === 'breast_milk' ? 'Maternal' : getMilkType(item) === 'donor_milk' ? 'Donor' : 'Formula'}
+                            </span>
                           </div>
                         </div>
                       </div>
-                      {getStatusBadge(milk)}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Preparation Workflow */}
-      {selectedMilk && prepState.step !== 'selection' && prepState.step !== 'complete' && (
-        <div className="grid lg:grid-cols-2 gap-6">
-          {/* Milk Info Card */}
-          <Card className="bg-slate-50">
-            <CardContent className="p-4">
-              <h4 className="font-semibold mb-3">Selected Milk</h4>
-              <div className="flex items-center gap-3">
-                <div className="w-12 h-12 rounded-full bg-white flex items-center justify-center">
-                  {getMilkIcon(selectedMilk.milkType)}
-                </div>
-                <div>
-                  <p className="font-mono text-sm">{selectedMilk.barcode}</p>
-                  <p className="text-sm font-medium">{selectedMilk.patientName}</p>
-                  <p className="text-xs text-slate-500">{selectedMilk.volume}ml | {selectedMilk.storageLocation}</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Current Step Action */}
-          <Card>
-            <CardContent className="p-6 space-y-4">
-              {/* Retrieval */}
-              {prepState.step === 'retrieval' && (
-                <>
-                  <h3 className="font-semibold text-lg flex items-center gap-2">
-                    <Package className="w-5 h-5" />
-                    Step 1: Retrieve from Storage
-                  </h3>
-                  <div className="p-4 bg-blue-50 rounded-lg">
-                    <p className="text-sm text-blue-800">
-                      Retrieve the milk container from <strong>{selectedMilk.storageUnit}</strong> at position <strong>{selectedMilk.shelfPosition}</strong>
-                    </p>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Retrieved By</Label>
-                    <Input
-                      placeholder="Enter your name"
-                      value={prepState.retrieval.by}
-                      onChange={(e) => setPrepState(prev => ({ ...prev, retrieval: { ...prev.retrieval, by: e.target.value } }))}
-                    />
-                  </div>
-                  <Button 
-                    onClick={completeRetrieval}
-                    disabled={!prepState.retrieval.by}
-                    className="w-full"
-                  >
-                    <CheckCircle2 className="w-4 h-4 mr-2" />
-                    Confirm Retrieval
-                  </Button>
-                </>
-              )}
-
-              {/* Thaw */}
-              {prepState.step === 'thaw' && (
-                <>
-                  <h3 className="font-semibold text-lg flex items-center gap-2">
-                    <Snowflake className="w-5 h-5" />
-                    Step 2: Thaw Frozen Milk
-                  </h3>
-                  <div className="p-4 bg-amber-50 rounded-lg">
-                    <p className="text-sm text-amber-800">
-                      This milk is frozen. Select thawing method and wait for complete thawing.
-                    </p>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Thawing Method</Label>
-                    <Select 
-                      value={prepState.thaw.method} 
-                      onValueChange={(v: 'refrigerator' | 'water_bath' | 'warmer') => setPrepState(prev => ({ ...prev, thaw: { ...prev.thaw, method: v } }))}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="refrigerator">Refrigerator (12-24 hours)</SelectItem>
-                        <SelectItem value="water_bath">Warm Water Bath (30 min)</SelectItem>
-                        <SelectItem value="warmer">Waterless Warmer (20 min)</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="text-xs text-slate-500">
-                    <Clock className="w-3 h-3 inline mr-1" />
-                    Estimated time: {prepState.thaw.method === 'refrigerator' ? '12-24 hours' : prepState.thaw.method === 'water_bath' ? '30 minutes' : '20 minutes'}
-                  </div>
-                  <Button onClick={completeThaw} className="w-full">
-                    <CheckCircle2 className="w-4 h-4 mr-2" />
-                    Thawing Complete
-                  </Button>
-                </>
-              )}
-
-              {/* Warm */}
-              {prepState.step === 'warm' && (
-                <>
-                  <h3 className="font-semibold text-lg flex items-center gap-2">
-                    <Thermometer className="w-5 h-5" />
-                    Step {selectedMilk.storageLocation === 'freezer' ? '3' : '2'}: Warm to Body Temperature
-                  </h3>
-                  <div className="p-4 bg-blue-50 rounded-lg">
-                    <p className="text-sm text-blue-800">
-                      Warm milk to body temperature (37°C / 98.6°F). Do not microwave!
-                    </p>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Warming Method</Label>
-                    <Select 
-                      value={prepState.warm.method} 
-                      onValueChange={(v: 'waterless_warmer' | 'water_bath') => setPrepState(prev => ({ ...prev, warm: { ...prev.warm, method: v } }))}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="waterless_warmer">Waterless Warmer (Recommended)</SelectItem>
-                        <SelectItem value="water_bath">Warm Water Bath</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Target Temperature (°C)</Label>
-                    <Input
-                      type="number"
-                      value={prepState.warm.temp}
-                      onChange={(e) => setPrepState(prev => ({ ...prev, warm: { ...prev.warm, temp: parseInt(e.target.value) || 37 } }))}
-                    />
-                    <p className="text-xs text-slate-500">Recommended: 37°C (body temperature)</p>
-                  </div>
-                  <Button onClick={completeWarm} className="w-full">
-                    <CheckCircle2 className="w-4 h-4 mr-2" />
-                    Warming Complete
-                  </Button>
-                </>
-              )}
-
-              {/* Fortify */}
-              {prepState.step === 'fortify' && (
-                <>
-                  <h3 className="font-semibold text-lg flex items-center gap-2">
-                    <FlaskConical className="w-5 h-5" />
-                    Step {selectedMilk.storageLocation === 'freezer' ? '4' : '3'}: Fortification (Optional)
-                  </h3>
-                  <div className="space-y-2">
-                    <Label>Select Fortification</Label>
-                    <Select 
-                      value={prepState.fortify.recipe} 
-                      onValueChange={(v) => setPrepState(prev => ({ ...prev, fortify: { ...prev.fortify, recipe: v } }))}
-                    >
-                      <SelectContent>
-                        {FORTIFICATION_RECIPES.map(recipe => (
-                          <SelectItem key={recipe.id} value={recipe.id}>
-                            {recipe.name} - {recipe.description}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  {prepState.fortify.recipe !== 'none' && (
-                    <div className="p-3 bg-amber-50 rounded-lg text-sm text-amber-800">
-                      <AlertCircle className="w-4 h-4 inline mr-1" />
-                      <strong>Two-person verification required</strong> for fortification
-                    </div>
-                  )}
-                  <Button onClick={completeFortify} className="w-full">
-                    <CheckCircle2 className="w-4 h-4 mr-2" />
-                    {prepState.fortify.recipe === 'none' ? 'Skip Fortification' : 'Fortification Complete'}
-                  </Button>
-                </>
-              )}
-
-              {/* Label */}
-              {prepState.step === 'label' && (
-                <>
-                  <h3 className="font-semibold text-lg flex items-center gap-2">
-                    <Barcode className="w-5 h-5" />
-                    Step {selectedMilk.storageLocation === 'freezer' ? '5' : '4'}: Generate Label
-                  </h3>
-                  <div className="p-4 bg-blue-50 rounded-lg">
-                    <p className="text-sm text-blue-800">
-                      Generate a new barcode label for the prepared feeding.
-                    </p>
-                  </div>
-                  {prepState.label.newBarcode && (
-                    <div className="border-2 border-slate-300 rounded-lg p-4 bg-white text-center">
-                      <svg ref={(el) => { if (el) JsBarcode(el, prepState.label.newBarcode, { format: 'CODE128', width: 2, height: 60, displayValue: true, fontSize: 12, margin: 5 }); }} />
-                    </div>
-                  )}
-                  <div className="flex gap-2">
-                    {!prepState.label.newBarcode ? (
-                      <Button onClick={completeLabel} className="flex-1">
-                        <Barcode className="w-4 h-4 mr-2" />
-                        Generate Label
-                      </Button>
-                    ) : (
-                      <>
-                        <Button onClick={printPrepLabel} variant="outline" className="flex-1">
-                          <Printer className="w-4 h-4 mr-2" />
-                          Print Label
-                        </Button>
-                        <Button onClick={() => setPrepState(prev => ({ ...prev, step: 'verify' }))} className="flex-1">
-                          <ArrowRight className="w-4 h-4 mr-2" />
-                          Continue
-                        </Button>
-                      </>
-                    )}
-                  </div>
-                </>
-              )}
-
-              {/* Verify */}
-              {prepState.step === 'verify' && (
-                <>
-                  <h3 className="font-semibold text-lg flex items-center gap-2">
-                    <UserCheck className="w-5 h-5" />
-                    Step {selectedMilk.storageLocation === 'freezer' ? '6' : '5'}: Final Verification
-                  </h3>
-                  <div className="p-4 bg-green-50 rounded-lg">
-                    <p className="text-sm text-green-800">
-                      <strong>Preparation Summary:</strong>
-                    </p>
-                    <ul className="text-sm text-green-700 mt-2 space-y-1">
-                      <li>✓ Retrieved from {selectedMilk.storageUnit}</li>
-                      {selectedMilk.storageLocation === 'freezer' && <li>✓ Thawed</li>}
-                      <li>✓ Warmed to {prepState.warm.temp}°C</li>
-                      <li>✓ {prepState.fortify.recipe === 'none' ? 'No fortification' : FORTIFICATION_RECIPES.find(r => r.id === prepState.fortify.recipe)?.name}</li>
-                      <li>✓ Labeled: {prepState.label.newBarcode}</li>
-                    </ul>
-                  </div>
-                  <div className="p-3 bg-amber-50 rounded-lg text-sm text-amber-800">
-                    <AlertCircle className="w-4 h-4 inline mr-1" />
-                    <strong>Two-person verification required</strong> before administration
-                  </div>
-                  <Button onClick={completeVerification} className="w-full">
-                    <UserCheck className="w-4 h-4 mr-2" />
-                    Request Second Verification
-                  </Button>
-                </>
-              )}
-            </CardContent>
-          </Card>
-        </div>
-      )}
-
-      {/* Complete - Prepared Feedings List */}
-      {prepState.step === 'complete' && (
-        <Card>
-          <CardContent className="p-6 space-y-4">
-            <div className="text-center">
-              <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                <CheckCircle2 className="w-8 h-8 text-green-600" />
-              </div>
-              <h3 className="text-xl font-semibold text-green-800">Preparation Complete!</h3>
-              <p className="text-slate-600">The feeding is ready for administration.</p>
-            </div>
-
-            {preparedFeedings.length > 0 && (
-              <div className="space-y-2">
-                <h4 className="font-semibold">Prepared Feedings</h4>
-                <div className="space-y-2">
-                  {preparedFeedings.map((feeding) => (
-                    <div key={feeding.id} className="p-3 border rounded-lg flex items-center justify-between">
-                      <div>
-                        <p className="font-mono text-sm">{feeding.newBarcode}</p>
-                        <p className="text-sm">{feeding.patientName} | {feeding.volume}ml</p>
-                        <p className="text-xs text-slate-500">
-                          Use by: {feeding.expiresAt.toLocaleString()}
-                        </p>
+                      <div className="flex flex-col items-end gap-1">
+                        {getStatusBadge(item)}
+                        {expired && (
+                          <Badge variant="destructive" className="text-[10px]">
+                            <AlertTriangle className="w-3 h-3 mr-1" />
+                            CANNOT USE
+                          </Badge>
+                        )}
                       </div>
-                      <Badge className="bg-green-100 text-green-700">Ready</Badge>
                     </div>
-                  ))}
-                </div>
-              </div>
-            )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
-            <Button onClick={resetPreparation} variant="outline" className="w-full">
-              <RotateCcw className="w-4 h-4 mr-2" />
-              Prepare Another Feeding
-            </Button>
+      {/* Prepared Items This Session */}
+      {preparedItems.length > 0 && (
+        <Card>
+          <CardContent className="p-6">
+            <h3 className="font-semibold text-lg flex items-center gap-2 mb-4">
+              <CheckCircle2 className="w-5 h-5 text-green-600" />
+              Prepared Feedings This Session
+            </h3>
+            <div className="space-y-2">
+              {preparedItems.map((item, idx) => (
+                <div key={idx} className="flex items-center justify-between p-3 border rounded-lg bg-green-50/50">
+                  <div>
+                    <p className="font-mono text-sm text-slate-700">{item.prepBarcode}</p>
+                    <p className="text-sm text-slate-600">
+                      {item.volume}ml from {item.originalBarcode} &bull; {item.patientName}
+                    </p>
+                    <p className="text-xs text-slate-400">
+                      Prepared: {item.preparedAt.toLocaleString()}
+                    </p>
+                  </div>
+                  <Badge className="bg-[#003366] text-white">Reserved</Badge>
+                </div>
+              ))}
+            </div>
           </CardContent>
         </Card>
       )}
 
-      {/* Second Verification Dialog */}
-      <Dialog open={showSecondVerifyDialog} onOpenChange={setShowSecondVerifyDialog}>
-        <DialogContent>
+      {/* ================================================================= */}
+      {/* DETAIL DIALOG — Select volume and prepare                         */}
+      {/* ================================================================= */}
+      <Dialog open={showDetailDialog} onOpenChange={setShowDetailDialog}>
+        <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Second Person Verification</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              <FlaskConical className="w-5 h-5 text-blue-600" />
+              Prepare Milk
+            </DialogTitle>
             <DialogDescription>
-              Hospital policy requires a second person to verify the prepared feeding.
+              Deduct the ordered volume from this milk container.
+              The milk will be marked as "Reserved" after preparation.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="p-3 bg-slate-50 rounded-lg text-sm">
-              <p><strong>Patient:</strong> {selectedMilk?.patientName}</p>
-              <p><strong>Volume:</strong> {selectedMilk?.volume}ml</p>
-              <p><strong>Fortification:</strong> {FORTIFICATION_RECIPES.find(r => r.id === prepState.fortify.recipe)?.name || 'None'}</p>
-              <p><strong>New Barcode:</strong> {prepState.label.newBarcode}</p>
+
+          {selectedMilk && (
+            <div className="space-y-4 py-2">
+              {/* Milk Info */}
+              <div className="bg-slate-50 rounded-lg p-4 space-y-2">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center border">
+                    {getMilkIcon(getMilkType(selectedMilk))}
+                  </div>
+                  <div>
+                    <p className="font-mono text-sm">{getMilkBarcode(selectedMilk)}</p>
+                    <p className="font-semibold">{getMilkPatientName(selectedMilk)}</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <div>
+                    <span className="text-slate-500">Available Volume:</span>
+                    <span className="ml-1 font-bold text-lg">{getMilkVolume(selectedMilk)}ml</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500">Expires:</span>
+                    <span className="ml-1">
+                      {getMilkExpiry(selectedMilk) ? new Date(getMilkExpiry(selectedMilk)).toLocaleDateString('en-GB') : 'N/A'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500">Type:</span>
+                    <span className="ml-1 capitalize">{getMilkType(selectedMilk).replace('_', ' ')}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500">Storage:</span>
+                    <span className="ml-1 capitalize">{getMilkStorage(selectedMilk)}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Active Order Info */}
+              {activeOrder && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm">
+                  <p className="text-blue-800 font-medium">Active Order</p>
+                  <p className="text-blue-700">
+                    {activeOrder.volume}ml {activeOrder.feedingType.replace('_', ' ')} - {activeOrder.frequency}
+                    {activeOrder.route && ` via ${activeOrder.route.replace('_', ' ')}`}
+                  </p>
+                </div>
+              )}
+
+              {/* Volume Input */}
+              <div className="space-y-2">
+                <Label>Volume to Prepare (ml) *</Label>
+                <Input
+                  type="number"
+                  min="1"
+                  max={getMilkVolume(selectedMilk)}
+                  placeholder={`Max: ${getMilkVolume(selectedMilk)}ml`}
+                  value={prepVolume}
+                  onChange={(e) => setPrepVolume(e.target.value)}
+                  className="text-lg"
+                  autoFocus
+                />
+                {prepVolume && Number(prepVolume) > 0 && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm space-y-1">
+                    <div className="flex justify-between">
+                      <span className="text-slate-600">Current Volume:</span>
+                      <span className="font-medium">{getMilkVolume(selectedMilk)}ml</span>
+                    </div>
+                    <div className="flex justify-between text-amber-700">
+                      <span>Deduct:</span>
+                      <span className="font-medium">-{prepVolume}ml</span>
+                    </div>
+                    <div className="border-t border-amber-200 pt-1 flex justify-between">
+                      <span className="font-semibold text-slate-700">Remaining:</span>
+                      <span className={`font-bold ${
+                        getMilkVolume(selectedMilk) - Number(prepVolume) > 0 ? 'text-green-600' : 'text-amber-600'
+                      }`}>
+                        {Math.max(0, getMilkVolume(selectedMilk) - Number(prepVolume))}ml
+                      </span>
+                    </div>
+                  </div>
+                )}
+                {Number(prepVolume) > getMilkVolume(selectedMilk) && (
+                  <p className="text-xs text-red-500 flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3" />
+                    Volume exceeds available amount
+                  </p>
+                )}
+              </div>
+
+              {/* Info */}
+              <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-800">
+                <CheckCircle2 className="w-4 h-4 inline mr-1" />
+                After preparation, this milk will be marked as <strong>"Reserved"</strong> and a prep barcode + label will be generated.
+              </div>
             </div>
-            <div className="space-y-2">
-              <Label>Second Verifier Name</Label>
-              <Input
-                placeholder="Enter verifier's name"
-                value={secondVerifierName}
-                onChange={(e) => setSecondVerifierName(e.target.value)}
-              />
-            </div>
-          </div>
+          )}
+
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowSecondVerifyDialog(false)}>Cancel</Button>
-            <Button onClick={finalizePreparation} disabled={!secondVerifierName}>
-              <CheckCircle2 className="w-4 h-4 mr-2" />
-              Verify & Complete
+            <Button variant="outline" onClick={() => setShowDetailDialog(false)} disabled={isPreparing}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handlePrepare}
+              disabled={
+                isPreparing ||
+                !prepVolume ||
+                Number(prepVolume) < 1 ||
+                Number(prepVolume) > (selectedMilk ? getMilkVolume(selectedMilk) : 0)
+              }
+              className="bg-[#003366] hover:bg-[#002244]"
+            >
+              {isPreparing ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
+                  Preparing...
+                </>
+              ) : (
+                <>
+                  <FlaskConical className="w-4 h-4 mr-2" />
+                  Prepare & Reserve
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ================================================================= */}
+      {/* RESULT DIALOG — Show prep barcode + print label                   */}
+      {/* ================================================================= */}
+      <Dialog open={showResultDialog} onOpenChange={setShowResultDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-green-600">
+              <CheckCircle2 className="w-6 h-6" />
+              Preparation Complete
+            </DialogTitle>
+            <DialogDescription>
+              Milk has been prepared and reserved. Print the label and apply it to the prepared feeding.
+            </DialogDescription>
+          </DialogHeader>
+
+          {prepResult && (
+            <div className="space-y-4 py-2">
+              {/* Summary */}
+              <div className="bg-green-50 rounded-lg p-4 space-y-2 text-sm">
+                <p><strong>Patient:</strong> {prepResult.patientName} (MRN: {patient.mrn})</p>
+                <p><strong>Original Container:</strong> {prepResult.originalBarcode}</p>
+                <p><strong>Volume Prepared:</strong> {prepResult.deductedVolume}ml</p>
+                <p><strong>Remaining in Container:</strong> {prepResult.remainingVolume}ml</p>
+                <p><strong>Status:</strong> <Badge className="bg-[#003366] text-white">Reserved</Badge></p>
+              </div>
+
+              {/* Generated Barcode — centered & aligned */}
+              <div className="border-2 border-slate-300 rounded-lg p-4 bg-white flex flex-col items-center justify-center">
+                <p className="text-xs text-slate-500 uppercase font-medium mb-2">Prep Barcode</p>
+                <div className="w-full flex justify-center overflow-hidden">
+                  <svg
+                    ref={(el) => {
+                      if (el) {
+                        JsBarcode(el, prepResult.prepBarcode, {
+                          format: 'CODE128',
+                          width: 1.5,
+                          height: 50,
+                          displayValue: true,
+                          fontSize: 10,
+                          margin: 5,
+                          textMargin: 4,
+                        });
+                      }
+                    }}
+                  />
+                </div>
+                <p className="text-xs font-mono text-slate-500 mt-1 break-all text-center">{prepResult.prepBarcode}</p>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="flex gap-2">
+            <Button variant="outline" onClick={handlePrintLabel}>
+              <Printer className="w-4 h-4 mr-2" />
+              Print Label
+            </Button>
+            <Button onClick={() => setShowResultDialog(false)} className="bg-[#003366] hover:bg-[#002244]">
+              Done
             </Button>
           </DialogFooter>
         </DialogContent>

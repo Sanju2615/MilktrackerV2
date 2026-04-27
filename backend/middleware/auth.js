@@ -134,8 +134,9 @@ const getRolePermissions = (role) => {
       'order_view', 'order_create', 'order_edit', 'order_cancel', 'order_verify',
       'administer_feeding', 'administer_verify', 'administer_override',
       'inventory_view', 'inventory_manage', 'inventory_discard',
-      'user_view', 'user_edit', 'user_assign_station',
+      'user_view', 'user_create', 'user_edit', 'user_assign_station',
       'audit_view',
+      'system_settings',
       'report_view', 'report_export'
     ],
     nurse: [
