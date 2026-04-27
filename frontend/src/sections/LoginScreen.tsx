@@ -178,12 +178,9 @@ export function LoginScreen() {
       <div className="w-full max-w-md space-y-6">
         {/* Logo and Header */}
         <div className="text-center space-y-3">
-          {/* KCH Logo */}
-          <div className="inline-flex items-center justify-center w-20 h-20 rounded-xl bg-white shadow-xl">
-            <svg viewBox="0 0 60 60" className="w-14 h-14">
-              <circle cx="30" cy="30" r="26" fill="none" stroke="#C9A227" strokeWidth="3"/>
-              <text x="30" y="38" textAnchor="middle" fill="#003366" fontSize="16" fontWeight="bold">KCH</text>
-            </svg>
+          {/* King's Logo */}
+          <div className="inline-flex items-center justify-center w-20 h-20 rounded-xl bg-white shadow-xl overflow-hidden">
+            <img src="./kings-logo.png" alt="King's College Hospital" className="w-16 h-16 object-cover" />
           </div>
           <div>
             <h1 className="text-2xl font-bold text-white">King's College Hospital</h1>

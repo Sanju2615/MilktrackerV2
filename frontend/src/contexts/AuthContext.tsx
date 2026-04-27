@@ -78,7 +78,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setState(prev => ({ ...prev, isLoading: true, error: null }));
 
     try {
-      // Call backend login endpoint
+      // Call backend login endpoint (returns JSON body for both success & error)
       const response = await authApi.login({
         username: credentials.username,
         password: credentials.password,
@@ -86,8 +86,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
 
       if (!response.success) {
-        setState(prev => ({ ...prev, isLoading: false, error: response.message || 'Login failed' }));
-        return { success: false, error: response.message || 'Login failed' };
+        const errorMsg = response.error || response.message || 'Invalid username or password';
+        setState(prev => ({ ...prev, isLoading: false, error: errorMsg }));
+        return { success: false, error: errorMsg };
       }
 
       const { token, user } = response.data;

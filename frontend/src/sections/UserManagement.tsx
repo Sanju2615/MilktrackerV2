@@ -46,6 +46,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Switch } from '@/components/ui/switch';
 import { toast } from 'sonner';
 
 export function UserManagement() {
@@ -57,7 +58,9 @@ export function UserManagement() {
     updateUserStatus,
     assignStations,
     createStation,
-    getStationName 
+    getStationName,
+    resetPassword,
+    loadUsers
   } = useUsers();
 
   const [activeTab, setActiveTab] = useState('users');
@@ -172,10 +175,10 @@ export function UserManagement() {
   };
 
   const handleStatusChange = async () => {
-    if (selectedUser && statusReason) {
+    if (selectedUser) {
       try {
         const newStatus = selectedUser.status === 'active' ? 'inactive' : 'active';
-        await updateUserStatus(selectedUser.id, newStatus, statusReason);
+        await updateUserStatus(selectedUser.id, newStatus, statusReason || `Status changed to ${newStatus}`);
         toast.success(`User status changed to ${newStatus}`);
         setShowStatusDialog(false);
         setStatusReason('');
@@ -183,6 +186,17 @@ export function UserManagement() {
       } catch (error) {
         toast.error('Failed to update status');
       }
+    }
+  };
+
+  // Quick toggle without dialog (for the switch)
+  const handleQuickToggle = async (user: any) => {
+    try {
+      const newStatus = user.status === 'active' ? 'inactive' : 'active';
+      await updateUserStatus(user.id, newStatus, `Quick toggle to ${newStatus}`);
+      toast.success(`${user.firstName} ${user.lastName} is now ${newStatus}`);
+    } catch (error) {
+      toast.error('Failed to update status');
     }
   };
 
@@ -215,9 +229,7 @@ export function UserManagement() {
     setIsResetting(true);
     
     try {
-      // Import userService dynamically to avoid circular dependency
-      const { userService } = await import('@/services/userService');
-      await userService.changePassword(selectedUser.id, newPassword);
+      await resetPassword(selectedUser.id, newPassword);
       
       toast.success('Password reset successfully', {
         description: `Password for ${selectedUser.firstName} ${selectedUser.lastName} has been reset.`,
@@ -366,7 +378,18 @@ export function UserManagement() {
                             )}
                           </div>
                         </TableCell>
-                        <TableCell>{getStatusBadge(user.status)}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-3">
+                            <Switch
+                              checked={user.status === 'active'}
+                              onCheckedChange={() => handleQuickToggle(user)}
+                              className={`${user.status === 'active' ? 'data-[state=checked]:bg-emerald-500' : 'data-[state=unchecked]:bg-red-400'}`}
+                            />
+                            <span className={`text-sm font-medium ${user.status === 'active' ? 'text-emerald-600' : user.status === 'inactive' ? 'text-red-500' : user.status === 'locked' ? 'text-red-700' : 'text-amber-600'}`}>
+                              {user.status === 'active' ? 'Active' : user.status === 'inactive' ? 'Inactive' : user.status === 'locked' ? 'Locked' : 'Suspended'}
+                            </span>
+                          </div>
+                        </TableCell>
                         <TableCell>
                           {user.credentials.lastLogin ? (
                             <span className="text-sm text-slate-600">
@@ -399,9 +422,9 @@ export function UserManagement() {
                                 variant="ghost"
                                 size="icon"
                                 onClick={() => { setSelectedUser(user); setShowStatusDialog(true); }}
-                                title={user.status === 'active' ? 'Deactivate' : 'Activate'}
+                                title={user.status === 'active' ? 'Deactivate (with reason)' : 'Activate (with reason)'}
                               >
-                                {user.status === 'active' ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
+                                {user.status === 'active' ? <Lock className="w-4 h-4 text-red-500" /> : <Unlock className="w-4 h-4 text-emerald-500" />}
                               </Button>
                             </div>
                           </TableCell>
@@ -684,7 +707,6 @@ export function UserManagement() {
             <Button variant="outline" onClick={() => setShowStatusDialog(false)}>Cancel</Button>
             <Button 
               onClick={handleStatusChange}
-              disabled={!statusReason}
               variant={selectedUser?.status === 'active' ? 'destructive' : 'default'}
             >
               {selectedUser?.status === 'active' ? 'Deactivate' : 'Activate'}

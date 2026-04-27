@@ -162,9 +162,43 @@ export function useUsers() {
     await loadUsers();
   }, [isAuthenticated, loadUsers]);
 
+  const updateUserStatus = useCallback(async (userId: string, status: UserStatus, reason?: string) => {
+    if (!isAuthenticated) throw new Error('Not authenticated');
+    const response = await usersApi.updateUserStatus(userId, { status, reason: reason || '' });
+    if (!response.success) throw new Error(response.message || 'Failed to update status');
+    await loadUsers();
+    return response;
+  }, [isAuthenticated, loadUsers]);
+
+  const assignStations = useCallback(async (userId: string, stationIds: string[], primaryStationId?: string) => {
+    if (!isAuthenticated) throw new Error('Not authenticated');
+    const response = await usersApi.assignStations(userId, { stationIds, primaryStationId });
+    if (!response.success) throw new Error(response.message || 'Failed to assign stations');
+    await loadUsers();
+    return response;
+  }, [isAuthenticated, loadUsers]);
+
+  const createStation = useCallback(async (stationData: any) => {
+    if (!isAuthenticated) throw new Error('Not authenticated');
+    const response = await usersApi.createStation({
+      name: stationData.name,
+      code: stationData.name.toLowerCase().replace(/\s+/g, '-'),
+      location: stationData.unit || stationData.location,
+    });
+    if (!response.success) throw new Error(response.message || 'Failed to create station');
+    await loadStations();
+    return response;
+  }, [isAuthenticated, loadStations]);
+
+  const getStationName = useCallback((stationId: string) => {
+    const station = stations.find(s => s.id === stationId);
+    return station?.name || stationId;
+  }, [stations]);
+
   const resetPassword = useCallback(async (userId: string, newPassword: string) => {
     if (!isAuthenticated) throw new Error('Not authenticated');
     const response = await usersApi.resetPassword(userId, { newPassword });
+    if (!response.success) throw new Error(response.message || 'Failed to reset password');
     return response.success;
   }, [isAuthenticated]);
 
@@ -190,6 +224,7 @@ export function useUsers() {
 
   return {
     users, stations, currentUser, isLoading, error, isAuthenticated,
-    login, logout, loadUsers, createUser, updateUser, resetPassword, forgotPassword, hasPermission
+    login, logout, loadUsers, createUser, updateUser, updateUserStatus,
+    assignStations, createStation, getStationName, resetPassword, forgotPassword, hasPermission
   };
 }

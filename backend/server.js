@@ -191,16 +191,17 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
-// Error handling
-app.use(errorHandler);
-
-// 404 handler
-app.use((req, res) => {
+// 404 handler (must be before errorHandler to catch unmatched routes)
+app.use((req, res, next) => {
   res.status(404).json({
     success: false,
-    error: 'Endpoint not found'
+    error: 'Endpoint not found',
+    path: req.originalUrl
   });
 });
+
+// Error handling (catches errors thrown via next(error) from routes)
+app.use(errorHandler);
 
 // Start server
 app.listen(PORT, () => {

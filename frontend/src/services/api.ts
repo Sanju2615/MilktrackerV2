@@ -56,8 +56,27 @@ export interface ApiResponse<T> {
 
 // Auth API
 export const authApi = {
-  login: (data: { username: string; password: string; stationId?: string }) =>
-    fetchWithAuth<any>('/auth/login', { method: 'POST', body: JSON.stringify(data) }),
+  /**
+   * Login - returns the JSON body for BOTH success and error responses
+   * so the caller can show inline error messages instead of throwing.
+   */
+  login: async (data: { username: string; password: string; stationId?: string }): Promise<any> => {
+    const url = `${API_BASE_URL}/auth/login`;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+        cache: 'no-cache',
+      });
+      const body = await response.json().catch(() => ({ success: false, error: 'Invalid server response' }));
+      // For login we always return the parsed body (success or error) — no throw
+      return body;
+    } catch (err: any) {
+      // Network / CORS error — return a structured error so UI can display it
+      return { success: false, error: err.message || 'Unable to connect to server. Please try again.' };
+    }
+  },
   logout: () => fetchWithAuth<any>('/auth/logout', { method: 'POST' }),
   getCurrentUser: () => fetchWithAuth<any>('/auth/me'),
   changePassword: (data: { currentPassword: string; newPassword: string }) =>
@@ -90,8 +109,12 @@ export const milkApi = {
   collect: (data: any) => fetchWithAuth<any>('/milk/collect', { method: 'POST', body: JSON.stringify(data) }),
   getById: (id: string) => fetchWithAuth<any>(`/milk/${id}`),
   getByBarcode: (barcode: string) => fetchWithAuth<any>(`/milk/barcode/${barcode}`),
+  getPatientMilk: (mrn: string) => fetchWithAuth<any>(`/milk/patient/${encodeURIComponent(mrn)}`),
+  getNextSequence: (patientMrn: string) => fetchWithAuth<any>(`/milk/next-sequence/${encodeURIComponent(patientMrn)}`),
   reserve: (id: string, patientMrn: string) =>
     fetchWithAuth<any>(`/milk/${id}/reserve`, { method: 'POST', body: JSON.stringify({ patientMrn }) }),
+  prepare: (id: string, data: { patientMrn: string; orderedVolume: number; orderId?: string }) =>
+    fetchWithAuth<any>(`/milk/${id}/prepare`, { method: 'POST', body: JSON.stringify(data) }),
   transfer: (id: string, data: any) =>
     fetchWithAuth<any>(`/milk/${id}/transfer`, { method: 'POST', body: JSON.stringify(data) }),
   discard: (id: string, data: any) =>
@@ -161,6 +184,7 @@ export const feedingApi = {
     fetchWithAuth<any>('/feeding/administer', { method: 'POST', body: JSON.stringify(data) }),
   verify: (id: string) => fetchWithAuth<any>(`/feeding/${id}/verify`, { method: 'POST' }),
   getPatientFeedings: (mrn: string) => fetchWithAuth<any>(`/feeding/patient/${mrn}`),
+  getCompletedFeedings: (params?: any) => fetchWithAuth<any>(`/feeding/completed${buildQueryString(params)}`),
 };
 
 // Reports API

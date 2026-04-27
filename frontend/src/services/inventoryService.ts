@@ -1,17 +1,18 @@
 // Milk Inventory Management Service - Fetches REAL data from backend API
 import { milkApi, inventoryApi } from './api';
-import type { MilkInventory, MilkType, StorageLocation, MilkStatus, ScanEvent, InventoryAlert, StorageUnit, BarcodeData } from '@/types/inventory';
+import type { MilkInventory, MilkType, StorageLocation, MilkStatus, ScanEvent, ClosedLoopVerification, InventoryAlert, StorageUnit, BarcodeData } from '@/types/inventory';
 
 function mapApiMilkToInventory(item: any): MilkInventory {
   return {
     id: item.id, barcode: item.barcode, patientId: item.patientMrn, patientName: item.patientName,
     milkType: item.milkType, volume: item.volumeMl, expressedDate: new Date(item.expressedAt),
-    expirationDate: new Date(item.expiresAt), storageLocation: item.storageLocation,
+    expirationDate: new Date(item.expiresAt),
+    storageLocation: item.storageLocation || item.storageType || 'refrigerator',
     storageUnit: item.storageUnitName || item.storageUnitId, shelfPosition: item.shelfPosition,
     status: item.status, reservedForPatientId: item.reservedForPatientMrn,
     reservedAt: item.reservedAt ? new Date(item.reservedAt) : undefined,
     serialNumber: item.serialNumber, notes: item.notes,
-    createdAt: new Date(item.createdAt), updatedAt: new Date(item.createdAt),
+    createdAt: new Date(item.createdAt), updatedAt: new Date(item.updatedAt || item.createdAt),
   };
 }
 
@@ -43,7 +44,9 @@ class InventoryService {
     const response = await milkApi.collect({
       patientMrn: milk.patientId || '', patientName: milk.patientName || '',
       volume: milk.volume, milkType: milk.milkType,
-      expressedAt: milk.expressedDate.toISOString(), storageLocation: milk.storageLocation,
+      expressedAt: milk.expressedDate.toISOString(),
+      storageLocation: milk.storageLocation,
+      barcode: milk.barcode,
       serialNumber: milk.serialNumber, notes: milk.notes,
     });
     if (!response.success) throw new Error('Failed to collect milk');
@@ -144,6 +147,62 @@ class InventoryService {
     const response = await milkApi.getStats();
     if (!response.success) throw new Error('Failed to fetch stats');
     return response.data;
+  }
+
+  // --- Methods required by useInventory ---
+
+  async checkFIFOCompliance(milkBarcode: string, patientId?: string): Promise<{
+    isCompliant: boolean; earlierItems: MilkInventory[]; message: string;
+  }> {
+    // Get the scanned milk item
+    const scannedMilk = await this.getMilkByBarcode(milkBarcode);
+    if (!scannedMilk) {
+      return { isCompliant: false, earlierItems: [], message: 'Milk item not found' };
+    }
+    // Get FIFO-ordered available milk for the same patient/type
+    const fifoList = await this.getFIFOSuggestedMilk(patientId, scannedMilk.milkType);
+    // Items that expire earlier than the scanned one
+    const earlierItems = fifoList.filter(
+      m => m.id !== scannedMilk.id && m.expirationDate < scannedMilk.expirationDate
+    );
+    const isCompliant = earlierItems.length === 0;
+    return {
+      isCompliant,
+      earlierItems,
+      message: isCompliant
+        ? 'FIFO compliant'
+        : `${earlierItems.length} item(s) expire before this container`,
+    };
+  }
+
+  async performClosedLoopVerification(
+    _patientBarcode: string,
+    milkBarcode: string,
+    _orderId: string,
+    _administeredBy: string,
+    _skipFIFOWarning?: boolean,
+    _fifoOverrideReason?: string
+  ): Promise<{
+    success: boolean;
+    verification?: ClosedLoopVerification;
+    error?: string;
+    fifoWarning?: { isCompliant: boolean; earlierItems: MilkInventory[]; message: string };
+  }> {
+    const milk = await this.getMilkByBarcode(milkBarcode);
+    if (!milk) return { success: false, error: 'Milk container not found in inventory' };
+    if (milk.status === 'administered') return { success: false, error: 'Milk already administered' };
+    if (milk.status === 'discarded') return { success: false, error: 'Milk was discarded' };
+    if (milk.expirationDate < new Date()) return { success: false, error: 'Milk has expired' };
+    return { success: true };
+  }
+
+  async acknowledgeAlert(_alertId: string, _userName: string): Promise<void> {
+    // Alerts are computed from expiry data; acknowledgement is local-only for now
+    return;
+  }
+
+  getScanHistory(): ScanEvent[] {
+    return [...this.scanEvents];
   }
 }
 

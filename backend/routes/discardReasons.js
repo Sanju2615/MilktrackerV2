@@ -105,7 +105,7 @@ router.post('/', [
       });
     }
 
-    const { value, label, description, iconName = 'FileText', requiresNotes = false } = req.body;
+    const { value, label, description, iconName = 'FileText', requiresNotes = false, displayOrder } = req.body;
 
     // Check if value exists
     const [existing] = await db.query(
@@ -120,12 +120,19 @@ router.post('/', [
       });
     }
 
+    // Get next display order if not specified
+    let order = displayOrder;
+    if (order === undefined || order === null) {
+      const [maxOrder] = await db.query('SELECT COALESCE(MAX(display_order), 0) + 1 as next_order FROM discard_reasons');
+      order = maxOrder[0].next_order;
+    }
+
     const reasonId = uuidv4();
     await db.query(
       `INSERT INTO discard_reasons 
-        (id, reason_value, reason_label, description, icon_name, requires_notes, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [reasonId, value, label, description, iconName, requiresNotes, req.user.id]
+        (id, reason_value, reason_label, description, icon_name, requires_notes, display_order, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [reasonId, value, label, description, iconName, requiresNotes, order, req.user.id]
     );
 
     await auditService.log({

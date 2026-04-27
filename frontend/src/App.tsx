@@ -3,32 +3,23 @@ import { useAuth } from '@/contexts/AuthContext';
 import { usePermission } from '@/hooks/usePermission';
 import { useStorage } from '@/hooks/useStorage';
 import { useEMR } from '@/hooks/useEMR';
-import { Dashboard } from '@/sections/Dashboard';
-import { FeedingForm } from '@/sections/FeedingForm';
-import { History } from '@/sections/History';
-import { Charts } from '@/sections/Charts';
+// Dashboard, FeedingForm, History, Charts removed (Personal tab removed)
 import { PatientList } from '@/sections/PatientList';
 import { CPOEOrderEntry } from '@/sections/CPOEOrderEntry';
 import { ClosedLoopAdministration } from '@/sections/ClosedLoopAdministration';
 import { InventoryManagement } from '@/sections/InventoryManagement';
-import { BarcodeScanner } from '@/sections/BarcodeScanner';
 import { MilkCollection } from '@/sections/MilkCollection';
 import { MilkPreparation } from '@/sections/MilkPreparation';
 import { UserManagement } from '@/sections/UserManagement';
 import { DiscardReasonSetup } from '@/sections/DiscardReasonSetup';
+import { CompletedOrders } from '@/sections/CompletedOrders';
 import { LoginScreen } from '@/sections/LoginScreen';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
 import { 
-  Baby, 
-  History as HistoryIcon, 
-  BarChart3, 
-  Trash2, 
   Users, 
   FileText, 
-  CheckCircle2,
-  Activity,
   Shield,
   Database,
   Package,
@@ -41,19 +32,10 @@ import {
   User,
   Stethoscope,
   Settings,
-  Settings2
+  Settings2,
+  CheckSquare,
 } from 'lucide-react';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog';
+
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -65,8 +47,6 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import type { EMRPatient } from '@/types/emr';
-
-type AppMode = 'personal' | 'himss6';
 
 function App() {
   const { isAuthenticated, isLoading, user, logout } = useAuth();
@@ -88,7 +68,7 @@ function App() {
     isReadOnly
   } = usePermission();
   
-  const { feedings, addFeeding, deleteFeeding, clearAllData } = useStorage();
+  useStorage(); // keep hook alive for storage persistence
   const { 
     selectedPatient, 
     patientOrders,
@@ -100,27 +80,16 @@ function App() {
     isLoading: emrLoading
   } = useEMR();
   
-  const [showForm, setShowForm] = useState(false);
-  const [activeTab, setActiveTab] = useState('dashboard');
+
   const [himss6Tab, setHimss6Tab] = useState('patients');
-  const [appMode, setAppMode] = useState<AppMode>('himss6');
+  const [inventoryRefreshKey, setInventoryRefreshKey] = useState(0);
 
-  const handleSaveFeeding = (feeding: Parameters<typeof addFeeding>[0]) => {
-    addFeeding(feeding);
-    setShowForm(false);
-    toast.success('Feeding logged successfully!', {
-      description: `Recorded ${feeding.type} feeding at ${feeding.startTime.toLocaleTimeString()}`,
-    });
-  };
-
-  const handleDeleteFeeding = (id: string) => {
-    deleteFeeding(id);
-    toast.success('Feeding deleted');
-  };
-
-  const handleClearAllData = () => {
-    clearAllData();
-    toast.success('All data cleared');
+  // Track tab switches to refresh inventory when tab becomes active
+  const handleHimss6TabChange = (tab: string) => {
+    setHimss6Tab(tab);
+    if (tab === 'inventory') {
+      setInventoryRefreshKey(prev => prev + 1);
+    }
   };
 
   const handleSelectPatient = async (patient: EMRPatient) => {
@@ -152,17 +121,6 @@ function App() {
         <Toaster position="top-center" richColors />
         <LoginScreen />
       </>
-    );
-  }
-
-  if (showForm) {
-    return (
-      <div className="min-h-screen bg-slate-50 py-8 px-4">
-        <FeedingForm 
-          onSave={handleSaveFeeding} 
-          onCancel={() => setShowForm(false)} 
-        />
-      </div>
     );
   }
 
@@ -198,22 +156,19 @@ function App() {
         <div className="max-w-6xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              {/* KCH Logo */}
-              <div className="w-12 h-12 rounded-lg bg-[#003366] flex items-center justify-center shadow-md">
-                <svg viewBox="0 0 40 40" className="w-8 h-8">
-                  <circle cx="20" cy="20" r="18" fill="none" stroke="#C9A227" strokeWidth="2"/>
-                  <text x="20" y="25" textAnchor="middle" fill="#FFFFFF" fontSize="14" fontWeight="bold">KCH</text>
-                </svg>
-              </div>
+              {/* King's Logo */}
+              <img
+                src="./kings-logo.png"
+                alt="King's College Hospital"
+                className="w-12 h-12 rounded-lg object-cover shadow-md"
+              />
               <div>
                 <div className="flex items-center gap-2">
                   <h1 className="font-bold text-[#003366]">King's College Hospital Jeddah</h1>
-                  {appMode === 'himss6' && (
-                    <Badge className="bg-[#C9A227] text-white border-[#C9A227] flex items-center gap-1">
-                      <Shield className="w-3 h-3" />
-                      HIMSS 6
-                    </Badge>
-                  )}
+                  <Badge className="bg-[#C9A227] text-white border-[#C9A227] flex items-center gap-1">
+                    <Shield className="w-3 h-3" />
+                    HIMSS 6
+                  </Badge>
                 </div>
                 <p className="text-xs text-slate-500">
                   Human Milk Tracker - NICU Clinical System
@@ -222,41 +177,6 @@ function App() {
             </div>
             
             <div className="flex items-center gap-3">
-              {/* Mode Toggle - Only for Admin */}
-              {canManageSystem && (
-                <div className="flex items-center gap-2 bg-slate-100 rounded-lg p-1">
-                  <button
-                    onClick={() => setAppMode('personal')}
-                    className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                      appMode === 'personal' 
-                        ? 'bg-white text-slate-800 shadow-sm' 
-                        : 'text-slate-500 hover:text-slate-700'
-                    }`}
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <Baby className="w-4 h-4" />
-                      Personal
-                    </div>
-                  </button>
-                  <button
-                    onClick={() => {
-                      setAppMode('himss6');
-                      loadPatients();
-                    }}
-                    className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                      appMode === 'himss6' 
-                        ? 'bg-white text-slate-800 shadow-sm' 
-                        : 'text-slate-500 hover:text-slate-700'
-                    }`}
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <Activity className="w-4 h-4" />
-                      Clinical
-                    </div>
-                  </button>
-                </div>
-              )}
-
               {/* User Profile Dropdown */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -309,32 +229,6 @@ function App() {
                 </DropdownMenuContent>
               </DropdownMenu>
 
-              {appMode === 'personal' && (
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button variant="ghost" size="icon" className="text-slate-400 hover:text-red-500">
-                      <Trash2 className="w-5 h-5" />
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Clear All Data</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        This will permanently delete all your feeding records. This action cannot be undone.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction
-                        onClick={handleClearAllData}
-                        className="bg-red-500 hover:bg-red-600"
-                      >
-                        Clear All
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-              )}
             </div>
           </div>
         </div>
@@ -342,45 +236,8 @@ function App() {
 
       {/* Main Content */}
       <main className="max-w-6xl mx-auto px-4 py-6">
-        {appMode === 'personal' ? (
-          /* Personal Mode - Original App */
-          <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-            <TabsList className="grid grid-cols-3 w-full max-w-md mx-auto">
-              <TabsTrigger value="dashboard" className="flex items-center gap-2">
-                <Baby className="w-4 h-4" />
-                <span className="hidden sm:inline">Dashboard</span>
-              </TabsTrigger>
-              <TabsTrigger value="history" className="flex items-center gap-2">
-                <HistoryIcon className="w-4 h-4" />
-                <span className="hidden sm:inline">History</span>
-              </TabsTrigger>
-              <TabsTrigger value="charts" className="flex items-center gap-2">
-                <BarChart3 className="w-4 h-4" />
-                <span className="hidden sm:inline">Analytics</span>
-              </TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="dashboard" className="mt-6">
-              <Dashboard 
-                feedings={feedings} 
-                onLogFeeding={() => setShowForm(true)} 
-              />
-            </TabsContent>
-
-            <TabsContent value="history" className="mt-6">
-              <History 
-                feedings={feedings} 
-                onDelete={handleDeleteFeeding} 
-              />
-            </TabsContent>
-
-            <TabsContent value="charts" className="mt-6">
-              <Charts feedings={feedings} />
-            </TabsContent>
-          </Tabs>
-        ) : (
-          /* HIMSS 6 Clinical Mode - Role-Based Navigation */
-          <Tabs value={himss6Tab} onValueChange={setHimss6Tab} className="space-y-6">
+          {/* HIMSS 6 Clinical Mode - Role-Based Navigation */}
+          <Tabs value={himss6Tab} onValueChange={handleHimss6TabChange} className="space-y-6">
             <TabsList className="flex flex-wrap w-full max-w-6xl mx-auto h-auto gap-1">
               {/* Patients Tab - All roles can view */}
               {canViewPatients && (
@@ -398,15 +255,7 @@ function App() {
                 </TabsTrigger>
               )}
               
-              {/* Collection Tab - Admin, Nurses, Managers, Physicians */}
-              {(isAdmin || isNurse || isNurseManager || isPhysician) && (
-                <TabsTrigger value="collection" className="flex items-center gap-2">
-                  <Droplets className="w-4 h-4" />
-                  <span className="hidden sm:inline">Collect</span>
-                </TabsTrigger>
-              )}
-              
-              {/* Inventory Tab - Roles that can view inventory */}
+              {/* Inventory Tab - Includes Collect + Inventory Management */}
               {canViewInventory && (
                 <TabsTrigger value="inventory" className="flex items-center gap-2">
                   <Package className="w-4 h-4" />
@@ -414,51 +263,35 @@ function App() {
                 </TabsTrigger>
               )}
               
-              {/* Preparation Tab - Nurses, Technicians, Managers */}
-              {(isNurse || isNurseManager || isTechnician) && (
-                <TabsTrigger value="preparation" className="flex items-center gap-2">
+              {/* Preparation Tab - Admin, Nurses, Technicians, Managers */}
+              {(isAdmin || isNurse || isNurseManager || isTechnician) && (
+                <TabsTrigger value="preparation" className="flex items-center gap-2" disabled={!selectedPatient}>
                   <FlaskConical className="w-4 h-4" />
                   <span className="hidden sm:inline">Prep</span>
                 </TabsTrigger>
               )}
               
-              {/* Scanner Tab - Nurses, Managers, Physicians who can administer */}
+              {/* Administer Tab - Combined scan + administration (Closed-Loop) */}
               {canAdministerFeeding && (
-                <TabsTrigger value="scanner" className="flex items-center gap-2" disabled={!selectedPatient}>
+                <TabsTrigger value="administer" className="flex items-center gap-2" disabled={!selectedPatient}>
                   <Scan className="w-4 h-4" />
-                  <span className="hidden sm:inline">Scan</span>
+                  <span className="hidden sm:inline">Administer</span>
                 </TabsTrigger>
               )}
-              
-              {/* Admin Tab - Nurses, Managers, Physicians who can administer */}
+
+              {/* Completed Orders Tab - beside Administer */}
               {canAdministerFeeding && (
-                <TabsTrigger value="admin" className="flex items-center gap-2" disabled={!selectedPatient}>
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span className="hidden sm:inline">Admin</span>
+                <TabsTrigger value="completed" className="flex items-center gap-2">
+                  <CheckSquare className="w-4 h-4" />
+                  <span className="hidden sm:inline">Completed</span>
                 </TabsTrigger>
               )}
               
-              {/* Users Tab - Admin and Nurse Managers */}
-              {canViewUsers && (
-                <TabsTrigger value="users" className="flex items-center gap-2">
-                  <UserCog className="w-4 h-4" />
-                  <span className="hidden sm:inline">Users</span>
-                </TabsTrigger>
-              )}
-              
-              {/* Audit Tab - Admin, Nurse Managers, Auditors */}
-              {canViewAudit && (
-                <TabsTrigger value="audit" className="flex items-center gap-2">
-                  <Database className="w-4 h-4" />
-                  <span className="hidden sm:inline">Audit</span>
-                </TabsTrigger>
-              )}
-              
-              {/* Setup Tab - Admin only */}
+              {/* Admin Tab - Admin only: combines Users, Audit, Setup */}
               {isAdmin && (
-                <TabsTrigger value="setup" className="flex items-center gap-2">
+                <TabsTrigger value="admin" className="flex items-center gap-2">
                   <Settings2 className="w-4 h-4" />
-                  <span className="hidden sm:inline">Setup</span>
+                  <span className="hidden sm:inline">Admin</span>
                 </TabsTrigger>
               )}
             </TabsList>
@@ -487,39 +320,24 @@ function App() {
               </TabsContent>
             )}
 
-            {/* Collection Content */}
-            {(isAdmin || isNurse || isNurseManager || isPhysician) && (
-              <TabsContent value="collection" className="mt-6">
-                <MilkCollection />
-              </TabsContent>
-            )}
-
-            {/* Inventory Content */}
+            {/* Inventory Content — now includes Collect + Inventory Management */}
             {canViewInventory && (
               <TabsContent value="inventory" className="mt-6">
-                <InventoryManagement 
+                <InventoryWithCollection
+                  inventoryRefreshKey={inventoryRefreshKey}
                   readOnly={isReadOnly}
                   canManage={canManageInventory}
                   canDiscard={canDiscardInventory}
+                  canCollect={isAdmin || isNurse || isNurseManager || isPhysician}
                 />
               </TabsContent>
             )}
 
             {/* Preparation Content */}
-            {(isNurse || isNurseManager || isTechnician) && (
+            {(isAdmin || isNurse || isNurseManager || isTechnician) && (
               <TabsContent value="preparation" className="mt-6">
-                <MilkPreparation />
-              </TabsContent>
-            )}
-
-            {/* Scanner Content */}
-            {canAdministerFeeding && (
-              <TabsContent value="scanner" className="mt-6">
                 {selectedPatient ? (
-                  <BarcodeScanner 
-                    patientId={selectedPatient.id}
-                    orderId="ord-001"
-                  />
+                  <MilkPreparation patient={selectedPatient} patientOrders={patientOrders} />
                 ) : (
                   <div className="text-center py-12 text-slate-500">
                     <Users className="w-12 h-12 mx-auto mb-3 text-slate-300" />
@@ -529,9 +347,9 @@ function App() {
               </TabsContent>
             )}
 
-            {/* Admin Content */}
+            {/* Administer Content — Closed-Loop Scan + Administration (combined) */}
             {canAdministerFeeding && (
-              <TabsContent value="admin" className="mt-6">
+              <TabsContent value="administer" className="mt-6">
                 {selectedPatient ? (
                   <ClosedLoopAdministration 
                     patient={selectedPatient} 
@@ -549,74 +367,156 @@ function App() {
               </TabsContent>
             )}
 
-            {/* Users Content */}
-            {canViewUsers && (
-              <TabsContent value="users" className="mt-6">
-                <UserManagement />
+            {/* Completed Orders Content */}
+            {canAdministerFeeding && (
+              <TabsContent value="completed" className="mt-6">
+                <CompletedOrders />
               </TabsContent>
             )}
 
-            {/* Audit Content */}
-            {canViewAudit && (
-              <TabsContent value="audit" className="mt-6">
-                <AuditLogViewer />
-              </TabsContent>
-            )}
-            
-            {/* Setup Content - Admin only */}
+            {/* Admin Content — combines Users, Audit, Setup (admin-only) */}
             {isAdmin && (
-              <TabsContent value="setup" className="mt-6">
-                <DiscardReasonSetup />
+              <TabsContent value="admin" className="mt-6">
+                <AdminPanel />
               </TabsContent>
             )}
           </Tabs>
-        )}
       </main>
-
-      {/* Mobile Floating Action Button (Personal Mode Only) */}
-      {appMode === 'personal' && (
-        <button
-          onClick={() => setShowForm(true)}
-          className="md:hidden fixed bottom-6 right-6 w-14 h-14 bg-blue-500 hover:bg-blue-600 text-white rounded-full shadow-lg shadow-blue-300 flex items-center justify-center transition-transform hover:scale-105"
-        >
-          <span className="text-2xl font-bold">+</span>
-        </button>
-      )}
 
       {/* Footer */}
       <footer className="max-w-6xl mx-auto px-4 py-6 text-center text-sm">
-        {appMode === 'himss6' ? (
-          <div className="space-y-2">
-            <div className="flex items-center justify-center gap-2">
-              <div className="w-6 h-6 rounded bg-[#003366] flex items-center justify-center">
-                <span className="text-[8px] text-white font-bold">KCH</span>
-              </div>
-              <p className="text-[#003366] font-medium">King's College Hospital Jeddah</p>
-            </div>
-            <p className="text-slate-500">Human Milk Tracker • HIMSS 6 Compliant Clinical System</p>
+        <div className="space-y-2">
+          <div className="flex items-center justify-center gap-2">
+            <img src="./kings-logo.png" alt="King's" className="w-6 h-6 rounded object-cover" />
+            <p className="text-[#003366] font-medium">King's College Hospital Jeddah</p>
+          </div>
+          <p className="text-slate-500">Human Milk Tracker &bull; HIMSS 6 Compliant Clinical System</p>
+          <p className="text-xs text-slate-400">
+            {emrConnected ? '✓ Connected to EMR' : '⚠ Offline Mode'} &bull; 
+            FHIR R4 &bull; HL7 v2.x &bull; Closed-Loop Integration
+          </p>
+          {user && (
             <p className="text-xs text-slate-400">
-              {emrConnected ? '✓ Connected to EMR' : '⚠ Offline Mode'} • 
-              FHIR R4 • HL7 v2.x • Closed-Loop Integration
+              Logged in as: {user.firstName} {user.lastName} ({roleDisplay.label})
+              {isReadOnly && ' • Read-Only Access'}
             </p>
-            {user && (
-              <p className="text-xs text-slate-400">
-                Logged in as: {user.firstName} {user.lastName} ({roleDisplay.label})
-                {isReadOnly && ' • Read-Only Access'}
-              </p>
-            )}
-          </div>
-        ) : (
-          <div className="space-y-1">
-            <div className="flex items-center justify-center gap-2">
-              <div className="w-6 h-6 rounded bg-[#003366] flex items-center justify-center">
-                <span className="text-[8px] text-white font-bold">KCH</span>
-              </div>
-              <p className="text-[#003366] font-medium">King's College Hospital Jeddah</p>
-            </div>
-            <p className="text-slate-400">Human Milk Tracker • NICU Clinical System</p>
-          </div>
-        )}
+          )}
+        </div>
       </footer>
+    </div>
+  );
+}
+
+// Inventory with Collection sub-tabs (Collect moved inside Inventory)
+function InventoryWithCollection({
+  inventoryRefreshKey,
+  readOnly,
+  canManage,
+  canDiscard,
+  canCollect,
+}: {
+  inventoryRefreshKey: number;
+  readOnly: boolean;
+  canManage: boolean;
+  canDiscard: boolean;
+  canCollect: boolean;
+}) {
+  const [subTab, setSubTab] = useState<'inventory' | 'collect'>('inventory');
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
+        <button
+          onClick={() => setSubTab('inventory')}
+          className={`px-4 py-2 rounded-t-lg text-sm font-medium transition-colors ${
+            subTab === 'inventory'
+              ? 'bg-white text-[#003366] border border-b-0 border-slate-200 -mb-px'
+              : 'text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          <div className="flex items-center gap-1.5">
+            <Package className="w-4 h-4" />
+            Inventory
+          </div>
+        </button>
+        {canCollect && (
+          <button
+            onClick={() => setSubTab('collect')}
+            className={`px-4 py-2 rounded-t-lg text-sm font-medium transition-colors ${
+              subTab === 'collect'
+                ? 'bg-white text-[#003366] border border-b-0 border-slate-200 -mb-px'
+                : 'text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            <div className="flex items-center gap-1.5">
+              <Droplets className="w-4 h-4" />
+              Collect
+            </div>
+          </button>
+        )}
+      </div>
+      {subTab === 'inventory' ? (
+        <InventoryManagement
+          key={`inv-${inventoryRefreshKey}`}
+          readOnly={readOnly}
+          canManage={canManage}
+          canDiscard={canDiscard}
+        />
+      ) : (
+        <MilkCollection />
+      )}
+    </div>
+  );
+}
+
+// Admin Panel - combines Users, Audit, Setup (admin-only)
+function AdminPanel() {
+  const [adminSubTab, setAdminSubTab] = useState<'users' | 'audit' | 'setup'>('users');
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2 border-b border-slate-200 pb-2">
+        <button
+          onClick={() => setAdminSubTab('users')}
+          className={`px-4 py-2 rounded-t-lg text-sm font-medium transition-colors ${
+            adminSubTab === 'users'
+              ? 'bg-white text-[#003366] border border-b-0 border-slate-200 -mb-px'
+              : 'text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          <div className="flex items-center gap-1.5">
+            <UserCog className="w-4 h-4" />
+            Users
+          </div>
+        </button>
+        <button
+          onClick={() => setAdminSubTab('audit')}
+          className={`px-4 py-2 rounded-t-lg text-sm font-medium transition-colors ${
+            adminSubTab === 'audit'
+              ? 'bg-white text-[#003366] border border-b-0 border-slate-200 -mb-px'
+              : 'text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          <div className="flex items-center gap-1.5">
+            <Database className="w-4 h-4" />
+            Audit
+          </div>
+        </button>
+        <button
+          onClick={() => setAdminSubTab('setup')}
+          className={`px-4 py-2 rounded-t-lg text-sm font-medium transition-colors ${
+            adminSubTab === 'setup'
+              ? 'bg-white text-[#003366] border border-b-0 border-slate-200 -mb-px'
+              : 'text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          <div className="flex items-center gap-1.5">
+            <Settings2 className="w-4 h-4" />
+            Setup
+          </div>
+        </button>
+      </div>
+      {adminSubTab === 'users' && <UserManagement />}
+      {adminSubTab === 'audit' && <AuditLogViewer />}
+      {adminSubTab === 'setup' && <DiscardReasonSetup />}
     </div>
   );
 }

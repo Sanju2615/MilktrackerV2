@@ -8,6 +8,7 @@ import { useEMR } from '@/hooks/useEMR';
 import { useInventory } from '@/hooks/useInventory';
 import type { MilkType } from '@/types/inventory';
 import type { EMRPatient } from '@/types/emr';
+import { milkApi } from '@/services/api';
 import { 
   Printer, 
   Baby, 
@@ -51,7 +52,6 @@ export function MilkCollection() {
   // Form state
   const [milkType, setMilkType] = useState<MilkType>('breast_milk');
   const [volume, setVolume] = useState(60);
-  const [serialNumber, setSerialNumber] = useState(1);
   const [quantity, setQuantity] = useState(1);
   const [expressedDate, setExpressedDate] = useState(new Date().toISOString().slice(0, 16));
   const [initialStorage, setInitialStorage] = useState<'freezer' | 'refrigerator'>('freezer');
@@ -72,6 +72,7 @@ export function MilkCollection() {
   }>>([]);
   
   const [currentStep, setCurrentStep] = useState<'scan' | 'collection' | 'printing' | 'inventory'>('scan');
+  const [isAddingToInventory, setIsAddingToInventory] = useState(false);
 
   // Load patients on mount
   useEffect(() => {
@@ -81,24 +82,19 @@ export function MilkCollection() {
   }, [loadPatients]);
 
   // Parse wristband barcode to extract MRN
-  // Wristband barcode format: PT-MRN or just MRN
+  // Wristband barcode format: PT-MRN (e.g. PT-00499) → extract just the MRN part (00499)
   const parseWristbandBarcode = (barcode: string): string | null => {
-    const trimmed = barcode.trim().toUpperCase();
-    if (trimmed.startsWith('PT-')) {
+    const trimmed = barcode.trim();
+    // Strip PT- prefix if present (case-insensitive)
+    if (trimmed.toUpperCase().startsWith('PT-')) {
       return trimmed.substring(3);
     }
-    if (trimmed.match(/^MRN\d+$/i)) {
-      return trimmed;
-    }
-    // If it's just numbers, assume it's the MRN number part
-    if (trimmed.match(/^\d+$/)) {
-      return `MRN${trimmed}`;
-    }
-    return trimmed;
+    // Otherwise return as-is (could be a raw MRN like 00499)
+    return trimmed || null;
   };
 
   // Handle wristband scan
-  const handleWristbandScan = () => {
+  const handleWristbandScan = async () => {
     setScanError(null);
     setIsScanning(true);
     
@@ -111,15 +107,54 @@ export function MilkCollection() {
       return;
     }
     
-    // Find baby by MRN
-    const baby = patients.find(p => p.mrn.toUpperCase() === mrn && p.isActive);
+    // First try local patient list (case-insensitive) — relaxed: don't require isActive on local lookup
+    let baby = patients.find(p => 
+      p.mrn.toLowerCase() === mrn.toLowerCase()
+    );
+    
+    // If not found locally, try fetching from backend API by MRN
+    if (!baby) {
+      try {
+        const { trakcareApi } = await import('@/services/api');
+        const response = await trakcareApi.getBabyByMrn(mrn);
+        if (response.success && response.data) {
+          // Map the API response to an EMRPatient
+          const apiBaby = response.data;
+          // isActive: treat any truthy value as active; default to true if field is missing
+          const isActiveVal = apiBaby.isActive;
+          const isActive = isActiveVal === undefined || isActiveVal === null
+            ? true  // default to active if field missing
+            : isActiveVal === 1 || isActiveVal === '1' || isActiveVal === true 
+              || (typeof isActiveVal === 'number' && isActiveVal > 0)
+              || String(isActiveVal).toLowerCase() === 'true';
+          baby = {
+            id: apiBaby.patientId || apiBaby.mrn || apiBaby.id,
+            mrn: apiBaby.mrn,
+            firstName: apiBaby.firstName || '',
+            lastName: apiBaby.lastName || '',
+            dateOfBirth: new Date(apiBaby.dateOfBirth || Date.now()),
+            gender: (apiBaby.gender?.toLowerCase() === 'male' || apiBaby.gender?.toLowerCase() === 'm') ? 'male' : 
+                    (apiBaby.gender?.toLowerCase() === 'female' || apiBaby.gender?.toLowerCase() === 'f') ? 'female' : 'unknown',
+            roomNumber: apiBaby.room || apiBaby.roomNumber,
+            bedNumber: apiBaby.bed || apiBaby.bedNumber,
+            isActive,
+            motherName: apiBaby.motherName || apiBaby.motherMrn,
+          } as EMRPatient;
+        }
+      } catch (err) {
+        console.warn('Backend patient lookup failed:', err);
+      }
+    }
     
     if (!baby) {
-      setScanError(`No active baby found with MRN: ${mrn}`);
+      setScanError(`No baby found with MRN: ${mrn}. Please check the MRN and try again.`);
       setIsScanning(false);
       toast.error(`Baby not found: ${mrn}`);
       return;
     }
+    
+    // Skip isActive check — allow scan to proceed for any found patient
+    // Active status will be validated during administration
     
     setScannedBaby(baby);
     setIsScanning(false);
@@ -144,17 +179,27 @@ export function MilkCollection() {
     setTimeout(() => wristbandInputRef.current?.focus(), 100);
   };
 
-  // Generate barcode data - simplified format for better readability
-  const generateBarcodeData = () => {
+  // Generate barcode data - format: MRN-NNNN (auto-incrementing per patient)
+  const generateBarcodeData = async () => {
     if (!scannedBaby) return;
     
+    // Fetch next sequence number from backend
+    let nextSeq = 1;
+    try {
+      const response = await milkApi.getNextSequence(scannedBaby.mrn);
+      if (response.success && response.data) {
+        nextSeq = response.data.nextSequence;
+      }
+    } catch (error) {
+      console.error('Failed to fetch next sequence, using default:', error);
+    }
+    
     const barcodes = [];
-    const dateCode = new Date(expressedDate).toISOString().slice(0, 10).replace(/-/g, '');
     
     for (let i = 0; i < quantity; i++) {
-      const serial = serialNumber + i;
-      // Format: MRN-SERIAL-TYPE-VOLUME-DATE (e.g., MRN12345-001-BM-60-20250402)
-      const barcode = `${scannedBaby.mrn}-${String(serial).padStart(3, '0')}-${milkType.substring(0, 2).toUpperCase()}-${volume}-${dateCode}`;
+      const seq = nextSeq + i;
+      // Format: MRN-NNNN (e.g., 00499-0001, 00499-0002)
+      const barcode = `${scannedBaby.mrn}-${String(seq).padStart(4, '0')}`;
       barcodes.push({
         barcode,
         patientMRN: scannedBaby.mrn,
@@ -162,7 +207,7 @@ export function MilkCollection() {
         volume,
         milkType,
         expressedDate,
-        serialNumber: serial,
+        serialNumber: seq,
         labelPrinted: false,
         addedToInventory: false,
       });
@@ -325,7 +370,7 @@ export function MilkCollection() {
               </div>
               <div class="detail-item">
                 <span class="detail-label">Serial:</span>
-                <span>#${String(item.serialNumber).padStart(3, '0')}</span>
+                <span>#${String(item.serialNumber).padStart(4, '0')}</span>
               </div>
             </div>
             <div class="barcode-container">
@@ -366,27 +411,45 @@ export function MilkCollection() {
   };
 
   // Add to inventory
-  const handleAddToInventory = () => {
+  const handleAddToInventory = async () => {
     if (!scannedBaby) return;
     
-    generatedBarcodes.forEach(item => {
-      addMilk({
-        patientId: scannedBaby.id,
-        patientName: `${scannedBaby.firstName} ${scannedBaby.lastName}`,
-        volume: item.volume,
-        milkType: item.milkType,
-        expressedDate: new Date(item.expressedDate),
-        expirationDate: new Date(new Date(item.expressedDate).getTime() + (initialStorage === 'freezer' ? 180 : 3) * 24 * 60 * 60 * 1000),
-        barcode: item.barcode,
-        storageLocation: initialStorage,
-        status: 'available',
-        notes,
-      });
-    });
+    setIsAddingToInventory(true);
+    let successCount = 0;
+    let failCount = 0;
 
-    setGeneratedBarcodes(prev => prev.map(item => ({ ...item, addedToInventory: true })));
-    setCurrentStep('inventory');
-    toast.success(`${quantity} container(s) added to inventory`);
+    for (const item of generatedBarcodes) {
+      try {
+        await addMilk({
+          patientId: scannedBaby.mrn,
+          patientName: `${scannedBaby.firstName} ${scannedBaby.lastName}`,
+          volume: item.volume,
+          milkType: item.milkType,
+          expressedDate: new Date(item.expressedDate),
+          expirationDate: new Date(new Date(item.expressedDate).getTime() + (initialStorage === 'freezer' ? 180 : 3) * 24 * 60 * 60 * 1000),
+          barcode: item.barcode,
+          storageLocation: initialStorage,
+          status: 'available',
+          serialNumber: item.serialNumber,
+          notes,
+        });
+        successCount++;
+      } catch (error) {
+        console.error(`Failed to add milk ${item.barcode} to inventory:`, error);
+        failCount++;
+      }
+    }
+
+    setIsAddingToInventory(false);
+
+    if (failCount > 0) {
+      toast.error(`${failCount} container(s) failed to add to inventory`);
+    }
+    if (successCount > 0) {
+      setGeneratedBarcodes(prev => prev.map(item => ({ ...item, addedToInventory: true })));
+      setCurrentStep('inventory');
+      toast.success(`${successCount} container(s) added to inventory`);
+    }
   };
 
   // Reset form for new collection
@@ -396,7 +459,6 @@ export function MilkCollection() {
     setScanError(null);
     setVolume(60);
     setQuantity(1);
-    setSerialNumber(prev => prev + quantity);
     setNotes('');
     setGeneratedBarcodes([]);
     setCurrentStep('scan');
@@ -532,7 +594,7 @@ export function MilkCollection() {
               <div className="text-center text-sm text-gray-500 mt-4">
                 <p>Or press Enter after scanning</p>
                 <p className="mt-2 text-xs">
-                  Expected format: PT-MRN12345 or MRN12345
+                  Expected format: PT-00499 or 00499 (MRN number)
                 </p>
               </div>
             </div>
@@ -736,17 +798,6 @@ export function MilkCollection() {
                 </Select>
               </div>
 
-              {/* Serial Number */}
-              <div className="space-y-2">
-                <Label className="text-[#003366] font-semibold">Starting Serial #</Label>
-                <Input
-                  type="number"
-                  value={serialNumber}
-                  onChange={(e) => setSerialNumber(Number(e.target.value))}
-                  className="h-12"
-                />
-              </div>
-
               {/* Notes */}
               <div className="space-y-2 col-span-2">
                 <Label className="text-[#003366] font-semibold">Notes (Optional)</Label>
@@ -809,7 +860,7 @@ export function MilkCollection() {
                   <div><span className="font-semibold">Vol:</span> {volume}ml</div>
                   <div><span className="font-semibold">Type:</span> {milkType === 'breast_milk' ? 'BM' : milkType === 'donor_milk' ? 'DM' : 'FM'}</div>
                   <div><span className="font-semibold">Expr:</span> {new Date(expressedDate).toLocaleDateString('en-GB')}</div>
-                  <div><span className="font-semibold">Serial:</span> #{String(serialNumber).padStart(3, '0')}</div>
+                  <div><span className="font-semibold">Seq:</span> {generatedBarcodes[0]?.serialNumber ? `#${String(generatedBarcodes[0].serialNumber).padStart(4, '0')}` : '-'}</div>
                 </div>
                 <div className="bg-gray-50 border border-gray-200 rounded p-2 mb-2">
                   <div className="flex justify-center">
@@ -846,11 +897,20 @@ export function MilkCollection() {
               </Button>
               <Button
                 onClick={handleAddToInventory}
-                disabled={generatedBarcodes.some(b => !b.labelPrinted)}
+                disabled={generatedBarcodes.some(b => !b.labelPrinted) || isAddingToInventory}
                 className="h-12 px-8 bg-[#C9A227] hover:bg-[#C9A227]/90"
               >
-                <Save className="w-5 h-5 mr-2" />
-                Add to Inventory
+                {isAddingToInventory ? (
+                  <span className="flex items-center gap-2">
+                    <span className="animate-spin">&#x27F3;</span>
+                    Adding to Inventory...
+                  </span>
+                ) : (
+                  <>
+                    <Save className="w-5 h-5 mr-2" />
+                    Add to Inventory
+                  </>
+                )}
               </Button>
             </div>
           </CardContent>

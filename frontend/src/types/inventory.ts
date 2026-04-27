@@ -7,8 +7,8 @@ export type MilkStatus = 'available' | 'reserved' | 'administered' | 'expired' |
 export interface MilkInventory {
   id: string;
   barcode: string; // Unique barcode for scanning
-  patientId?: string; // If mother's own milk
-  patientName?: string; // Mother's name
+  patientId?: string; // Patient MRN
+  patientName?: string; // Patient's name
   milkType: MilkType;
   volume: number; // in ml
   expressedDate: Date;
@@ -22,6 +22,8 @@ export interface MilkInventory {
   };
   status: MilkStatus;
   reservedForPatientId?: string;
+  reservedAt?: Date;
+  serialNumber?: number;
   administeredAt?: Date;
   administeredBy?: string;
   notes?: string;

@@ -1,11 +1,17 @@
 /**
  * Feeding Administration Routes
- * Record and verify feedings
+ * Record and retrieve feedings
+ * 
+ * Changes:
+ *  - numeric_id (AUTO_INCREMENT) is the display ID; UUID id is internal only
+ *  - patient_mrn stores the **actual** MRN, not the patient ID
+ *  - administered_by user is auto-populated from the logged-in session (no second nurse step)
+ *  - Second-nurse verification route removed
  */
 
 const express = require('express');
 const { body, validationResult } = require('express-validator');
-const { v4: uuidv4 } = require('uuid');
+// No UUID needed - all IDs are AUTO_INCREMENT integers
 const db = require('../utils/db');
 const { camelizeRow, camelizeRows } = require('../utils/db');
 const auditService = require('../services/auditService');
@@ -19,7 +25,13 @@ const isDefined = (val) => val !== undefined && val !== null && val !== '' && va
 
 /**
  * POST /api/v1/feeding/administer
- * Record a feeding administration
+ * Record a feeding administration.
+ * 
+ * HIMSS 6 Closed-Loop Enforcement:
+ *   - verificationMethod must be 'barcode' or 'manual_override'
+ *   - If 'manual_override': overrideCategory + overrideJustification are REQUIRED
+ *   - Administered-by user is auto-populated from the logged-in session
+ *   - patient_mrn must be the **real MRN** (e.g. 0004818), NOT the IRIS patient ID
  */
 router.post('/administer', [
   body('patientMrn').trim().notEmpty(),
@@ -28,9 +40,12 @@ router.post('/administer', [
   body('barcode').optional().trim(),
   body('volumeOrdered').optional().isInt(),
   body('volumeGiven').isInt({ min: 1 }),
-  body('feedingType').isIn(['bottle', 'syringe', 'gavage', 'breastfeeding']),
-  body('route').isIn(['oral', 'ng_tube', 'og_tube', 'g_tube']),
-  body('administeredAt').isISO8601()
+  body('feedingType').trim().notEmpty(),
+  body('route').optional().trim(),
+  body('administeredAt').optional().isISO8601(),
+  body('verificationMethod').isIn(['barcode', 'manual_override']).withMessage('verificationMethod must be barcode or manual_override'),
+  body('overrideCategory').optional().trim(),
+  body('overrideJustification').optional().trim(),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -44,105 +59,121 @@ router.post('/administer', [
     const {
       patientMrn, patientName, milkInventoryId, barcode,
       orderId, volumeOrdered, volumeGiven, feedingType, route,
-      administeredAt, tolerance, residual, vomit, stool, notes
+      administeredAt, tolerance, residual, vomit, stool, notes,
+      verificationMethod, overrideCategory, overrideJustification
     } = req.body;
 
-    const adminId = uuidv4();
+    // ── Closed-loop gate ──────────────────────────────────────
+    if (verificationMethod === 'manual_override') {
+      if (!overrideCategory || !overrideJustification || !overrideJustification.trim()) {
+        return res.status(400).json({
+          success: false,
+          error: 'Override requires both a category and written justification'
+        });
+      }
+    }
+    // ──────────────────────────────────────────────────────────
 
-    await db.query(
+    // Auto-populate nurse name from the logged-in session
+    const administeredByName = req.user
+      ? `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim()
+      : 'System';
+
+    // Build the combined notes field including any override info
+    const overridePrefix = verificationMethod === 'manual_override'
+      ? `[OVERRIDE] Category: ${overrideCategory}. Justification: ${overrideJustification}. `
+      : '';
+    const combinedNotes = overridePrefix + (notes || '');
+
+    // Insert – id is AUTO_INCREMENT, filled by DB automatically
+    const [insertResult] = await db.query(
       `INSERT INTO feeding_administrations 
-        (id, patient_mrn, patient_name, milk_inventory_id, barcode, order_id,
+        (patient_mrn, patient_name, milk_inventory_id, barcode, order_id,
          volume_ordered_ml, volume_given_ml, feeding_type, route,
-         administered_at, administered_by_user_id, tolerance, residual_ml,
-         vomit, stool, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [adminId, patientMrn, patientName, milkInventoryId || null, barcode || null, orderId || null,
-       volumeOrdered || null, volumeGiven, feedingType, route,
-       administeredAt, req.user.id, tolerance || 'good', residual || null,
-       vomit || false, stool || false, notes || null]
+         administered_at, administered_by_user_id, administered_by_name,
+         tolerance, residual_ml, vomit, stool, notes, verification_method)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [patientMrn, patientName, milkInventoryId || null, barcode || null, orderId || null,
+       volumeOrdered || null, volumeGiven, feedingType, route || 'oral',
+       administeredAt || new Date().toISOString(), req.user ? req.user.id : null, administeredByName,
+       tolerance || 'good', residual || null,
+       vomit || false, stool || false, combinedNotes || null, verificationMethod]
     );
 
-    // Update milk inventory status if barcode provided
-    if (barcode) {
-      await db.query(
-        'UPDATE milk_inventory SET status = "administered", updated_at = NOW() WHERE barcode = ?',
-        [barcode]
+    const adminId = insertResult.insertId;
+
+    // Update milk inventory: subtract volume given, update status
+    let milkVolumeInfo = null;
+    if (barcode || milkInventoryId) {
+      // Find the milk record
+      const lookupField = barcode ? 'barcode' : 'id';
+      const lookupValue = barcode || milkInventoryId;
+      
+      const [milkRows] = await db.query(
+        `SELECT id, barcode, volume_ml, status, patient_mrn FROM milk_inventory WHERE ${lookupField} = ?`,
+        [lookupValue]
       );
+      
+      if (milkRows.length > 0) {
+        const milk = milkRows[0];
+
+        // ── SERVER-SIDE MRN CHECK: milk must belong to the same patient ──
+        if (milk.patient_mrn && patientMrn &&
+            milk.patient_mrn.trim().toLowerCase() !== patientMrn.trim().toLowerCase()) {
+          return res.status(400).json({
+            success: false,
+            error: `MRN mismatch: milk belongs to patient ${milk.patient_mrn}, not ${patientMrn}`
+          });
+        }
+        // ─────────────────────────────────────────────────────────────────
+
+        const originalVolume = milk.volume_ml;
+        const remainingVolume = Math.max(0, originalVolume - volumeGiven);
+        const newStatus = remainingVolume <= 0 ? 'administered' : 'available';
+        
+        await db.query(
+          'UPDATE milk_inventory SET volume_ml = ?, status = ?, updated_at = NOW() WHERE id = ?',
+          [remainingVolume, newStatus, milk.id]
+        );
+        
+        milkVolumeInfo = {
+          milkId: milk.id,
+          milkBarcode: milk.barcode,
+          originalVolumeMl: originalVolume,
+          volumeGivenMl: volumeGiven,
+          remainingVolumeMl: remainingVolume,
+          milkStatus: newStatus
+        };
+      }
     }
 
+    // adminId IS the auto-increment integer id now
+
     await auditService.log({
-      userId: req.user.id,
-      userName: `${req.user.firstName} ${req.user.lastName}`,
+      userId: req.user ? req.user.id : null,
+      userName: administeredByName,
       action: 'administer_feeding',
       entityType: 'feeding_administration',
       entityId: adminId,
       patientMrn,
-      details: `Administered ${volumeGiven}ml via ${feedingType} to ${patientName}`
+      details: `Administered ${volumeGiven}ml via ${feedingType} to ${patientName} by ${administeredByName}` +
+               (verificationMethod === 'manual_override' ? ` [OVERRIDE: ${overrideCategory}]` : ' [Barcode Verified]')
     });
 
     res.status(201).json({
       success: true,
       message: 'Feeding recorded successfully',
-      data: { id: adminId }
+      data: { 
+        id: adminId,
+        administeredByName,
+        milkVolume: milkVolumeInfo
+      }
     });
   } catch (error) {
     console.error('Administer feeding error:', error);
     res.status(500).json({
       success: false,
       error: 'Failed to record feeding',
-      details: error.message,
-      code: error.code || undefined
-    });
-  }
-});
-
-/**
- * POST /api/v1/feeding/:id/verify
- * Verify a feeding (second nurse verification)
- */
-router.post('/:id/verify', async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // Get feeding info
-    const [feeding] = await db.query(
-      'SELECT patient_mrn, patient_name FROM feeding_administrations WHERE id = ?',
-      [id]
-    );
-
-    if (feeding.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'Feeding not found'
-      });
-    }
-
-    await db.query(
-      `UPDATE feeding_administrations 
-       SET verified_by_user_id = ?, verified_at = NOW()
-       WHERE id = ?`,
-      [req.user.id, id]
-    );
-
-    await auditService.log({
-      userId: req.user.id,
-      userName: `${req.user.firstName} ${req.user.lastName}`,
-      action: 'verify_feeding',
-      entityType: 'feeding_administration',
-      entityId: id,
-      patientMrn: feeding[0].patient_mrn,
-      details: `Verified feeding for ${feeding[0].patient_name}`
-    });
-
-    res.json({
-      success: true,
-      message: 'Feeding verified successfully'
-    });
-  } catch (error) {
-    console.error('Verify feeding error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Failed to verify feeding',
       details: error.message,
       code: error.code || undefined
     });
@@ -160,11 +191,9 @@ router.get('/', async (req, res) => {
     let sql = `
       SELECT 
         fa.*,
-        CONCAT(admin_by.first_name, ' ', admin_by.last_name) as administered_by_name,
-        CONCAT(verify_by.first_name, ' ', verify_by.last_name) as verified_by_name
+        COALESCE(fa.administered_by_name, CONCAT(admin_by.first_name, ' ', admin_by.last_name)) as administered_by_name
       FROM feeding_administrations fa
       LEFT JOIN users admin_by ON fa.administered_by_user_id = admin_by.id
-      LEFT JOIN users verify_by ON fa.verified_by_user_id = verify_by.id
       WHERE 1=1
     `;
 
@@ -208,11 +237,9 @@ router.get('/patient/:mrn', async (req, res) => {
     const [feedings] = await db.query(
       `SELECT 
         fa.*,
-        CONCAT(admin_by.first_name, ' ', admin_by.last_name) as administered_by_name,
-        CONCAT(verify_by.first_name, ' ', verify_by.last_name) as verified_by_name
+        COALESCE(fa.administered_by_name, CONCAT(admin_by.first_name, ' ', admin_by.last_name)) as administered_by_name
       FROM feeding_administrations fa
       LEFT JOIN users admin_by ON fa.administered_by_user_id = admin_by.id
-      LEFT JOIN users verify_by ON fa.verified_by_user_id = verify_by.id
       WHERE fa.patient_mrn = ?
       ORDER BY fa.administered_at DESC`,
       [mrn]
@@ -227,6 +254,73 @@ router.get('/patient/:mrn', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to retrieve patient feedings',
+      details: error.message,
+      code: error.code || undefined
+    });
+  }
+});
+
+/**
+ * GET /api/v1/feeding/completed
+ * Get completed feeding administrations (for the Completed Orders page)
+ * Returns feedings with their incremental numeric_id for display
+ */
+router.get('/completed', async (req, res) => {
+  try {
+    const { patientMrn, page = 1, limit = 50 } = req.query;
+
+    let sql = `
+      SELECT 
+        fa.*,
+        COALESCE(fa.administered_by_name, CONCAT(admin_by.first_name, ' ', admin_by.last_name)) as administered_by_name,
+        mi.volume_ml as current_milk_volume,
+        mi.status as current_milk_status,
+        mi.milk_type
+      FROM feeding_administrations fa
+      LEFT JOIN users admin_by ON fa.administered_by_user_id = admin_by.id
+      LEFT JOIN milk_inventory mi ON fa.barcode = mi.barcode
+      WHERE 1=1
+    `;
+
+    const params = [];
+
+    if (isDefined(patientMrn)) {
+      sql += ' AND fa.patient_mrn = ?';
+      params.push(patientMrn);
+    }
+
+    sql += ' ORDER BY fa.administered_at DESC LIMIT ? OFFSET ?';
+    const pageNum = Number(page) || 1;
+    const limitNum = Number(limit) || 50;
+    params.push(limitNum, (pageNum - 1) * limitNum);
+
+    const [feedings] = await db.query(sql, params);
+
+    // Count total
+    let countSql = 'SELECT COUNT(*) as total FROM feeding_administrations WHERE 1=1';
+    const countParams = [];
+    if (isDefined(patientMrn)) {
+      countSql += ' AND patient_mrn = ?';
+      countParams.push(patientMrn);
+    }
+    const [countRows] = await db.query(countSql, countParams);
+    const total = countRows[0]?.total || 0;
+
+    res.json({
+      success: true,
+      data: camelizeRows(feedings),
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('Get completed feedings error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to retrieve completed feedings',
       details: error.message,
       code: error.code || undefined
     });
